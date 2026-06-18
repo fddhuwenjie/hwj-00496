@@ -208,6 +208,29 @@ router.post('/:id/start-sign', (req: AuthRequest, res: Response) => {
       res.status(400).json({ success: false, error: '请先指定签署人' });
       return;
     }
+
+    const latestReview = db.prepare(`
+      SELECT * FROM review_history
+      WHERE contract_id = ? AND version = ?
+      ORDER BY id DESC LIMIT 1
+    `).get(contractId, contract.version) as any;
+
+    if (latestReview) {
+      const pendingHighRisks = db.prepare(`
+        SELECT COUNT(*) as cnt FROM risk_records
+        WHERE review_history_id = ? AND risk_level = ? AND status = ?
+      `).get(latestReview.id, 'high', 'pending') as any;
+
+      if (pendingHighRisks.cnt > 0) {
+        res.status(400).json({
+          success: false,
+          error: `存在 ${pendingHighRisks.cnt} 项未处理的高风险，请先处理或豁免后再发起签署`,
+          data: { has_high_risk: true, pending_high_count: pendingHighRisks.cnt },
+        });
+        return;
+      }
+    }
+
     db.prepare("UPDATE contracts SET status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(contractId);
 
     const insertNotif = db.prepare('INSERT INTO notifications (user_id, contract_id, message) VALUES (?, ?, ?)');

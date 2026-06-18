@@ -140,6 +140,107 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return data.data as T;
 }
 
+export interface ReviewRule {
+  id: number;
+  name: string;
+  contract_type: string;
+  risk_level: 'high' | 'medium' | 'low';
+  pattern: string;
+  is_regex: number;
+  description: string;
+  suggestion: string;
+  is_enabled: number;
+  created_by: number;
+  creator_name?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RiskRecord {
+  id: number;
+  review_history_id: number;
+  contract_id: number;
+  rule_id: number;
+  rule_name: string;
+  risk_level: 'high' | 'medium' | 'low';
+  matched_content: string;
+  paragraph: string;
+  description: string;
+  suggestion: string;
+  status: 'pending' | 'modified' | 'exempt';
+  exempt_reason?: string;
+  handled_by?: number;
+  handler_name?: string;
+  handled_at?: string;
+  created_at: string;
+  contract_title?: string;
+  contract_no?: string;
+  reviewed_at?: string;
+}
+
+export interface ReviewHistory {
+  id: number;
+  contract_id: number;
+  version: number;
+  reviewed_by: number;
+  reviewer_name?: string;
+  reviewed_at: string;
+  total_risks: number;
+  high_count: number;
+  medium_count: number;
+  low_count: number;
+  risks?: RiskRecord[];
+  can_sign?: boolean;
+}
+
+export interface RiskComparison {
+  added: RiskRecord[];
+  removed: RiskRecord[];
+  remaining: RiskRecord[];
+  prev_version: number;
+  curr_version: number;
+}
+
+export interface ReviewResult {
+  review_id: number;
+  risks: RiskRecord[];
+  counts: { total: number; high: number; medium: number; low: number };
+  can_sign: boolean;
+  comparison: RiskComparison | null;
+}
+
+export interface RiskDashboard {
+  month_high_risk: number;
+  type_distribution: {
+    contract_type: string;
+    high_count: number;
+    medium_count: number;
+    low_count: number;
+    total: number;
+  }[];
+  top_risks: {
+    rule_name: string;
+    high_count: number;
+    medium_count: number;
+    low_count: number;
+    total: number;
+  }[];
+  pending_list: RiskRecord[];
+}
+
+export interface RiskAuditLog {
+  id: number;
+  risk_record_id: number;
+  contract_id: number;
+  action: string;
+  old_status: string;
+  new_status: string;
+  reason: string;
+  operator_id: number;
+  operator_name: string;
+  created_at: string;
+}
+
 export const api = {
   login: (username: string, password: string) =>
     request<User>('/auth/login', {
@@ -147,6 +248,35 @@ export const api = {
       body: JSON.stringify({ username, password }),
     }),
   getUsers: () => request<User[]>('/auth/users'),
+
+  getReviewRules: (contract_type?: string, is_enabled?: boolean) => {
+    const params: Record<string, string> = {};
+    if (contract_type) params.contract_type = contract_type;
+    if (is_enabled !== undefined) params.is_enabled = is_enabled ? '1' : '0';
+    const qs = Object.keys(params).length ? '?' + new URLSearchParams(params).toString() : '';
+    return request<ReviewRule[]>(`/review/rules${qs}`);
+  },
+  getReviewRule: (id: number) => request<ReviewRule>(`/review/rules/${id}`),
+  createReviewRule: (data: Partial<ReviewRule>) =>
+    request<{ id: number }>('/review/rules', { method: 'POST', body: JSON.stringify(data) }),
+  updateReviewRule: (id: number, data: Partial<ReviewRule>) =>
+    request<void>(`/review/rules/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteReviewRule: (id: number) => request<void>(`/review/rules/${id}`, { method: 'DELETE' }),
+
+  reviewContract: (id: number) =>
+    request<ReviewResult>(`/review/contract/${id}`, { method: 'POST' }),
+  getLatestReview: (id: number) =>
+    request<ReviewHistory | null>(`/review/contract/${id}/latest`),
+  getReviewHistory: (id: number) =>
+    request<ReviewHistory[]>(`/review/contract/${id}/history`),
+  updateRiskStatus: (id: number, status: 'pending' | 'modified' | 'exempt', exempt_reason?: string) =>
+    request<void>(`/review/risk/${id}/status`, { method: 'POST', body: JSON.stringify({ status, exempt_reason }) }),
+  getRiskAuditLogs: (id: number) =>
+    request<RiskAuditLog[]>(`/review/risk/${id}/audit`),
+  getRiskDashboard: (params?: { contract_type?: string; risk_level?: string; startDate?: string; endDate?: string }) => {
+    const qs = params ? '?' + new URLSearchParams(params as any).toString() : '';
+    return request<RiskDashboard>(`/review/dashboard${qs}`);
+  },
 
   getTemplates: (category?: string) =>
     request<Template[]>(category ? `/templates?category=${category}` : '/templates'),

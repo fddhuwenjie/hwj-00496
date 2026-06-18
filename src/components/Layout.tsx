@@ -4,7 +4,7 @@ import { useStore, STATUS_LABEL, STATUS_COLOR } from '../store';
 import { api, type Notification } from '../lib/api';
 import {
   LayoutDashboard, FileText, FilePlus, FileSignature, Search, BarChart3,
-  Bell, LogOut, User, Menu, X, ChevronRight
+  Bell, LogOut, User, Menu, X, ChevronRight, Shield, Scale
 } from 'lucide-react';
 
 const navItems = [
@@ -15,6 +15,8 @@ const navItems = [
   { path: '/pending', label: '待我签署', icon: FileSignature },
   { path: '/signature', label: '我的签章', icon: FileSignature },
   { path: '/search', label: '合同检索', icon: Search },
+  { path: '/review-rules', label: '审查规则', icon: Scale, adminOnly: true },
+  { path: '/risk-dashboard', label: '风险看板', icon: Shield },
   { path: '/stats', label: '统计报表', icon: BarChart3 },
 ];
 
@@ -53,7 +55,10 @@ export default function Layout() {
           </div>
         </div>
         <nav className="p-3 space-y-1">
-          {navItems.map((item) => {
+          {navItems.filter((item) => {
+            if ((item as any).adminOnly && user?.role !== 'admin') return false;
+            return true;
+          }).map((item) => {
             const Icon = item.icon;
             const active = location.pathname === item.path ||
               (item.path === '/contracts' && location.pathname.startsWith('/contract/'));

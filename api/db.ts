@@ -126,6 +126,64 @@ function initDatabase() {
       is_read INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS review_rules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      contract_type TEXT NOT NULL DEFAULT 'all',
+      risk_level TEXT NOT NULL DEFAULT 'medium',
+      pattern TEXT NOT NULL,
+      is_regex INTEGER DEFAULT 0,
+      description TEXT,
+      suggestion TEXT,
+      is_enabled INTEGER DEFAULT 1,
+      created_by INTEGER REFERENCES users(id),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS review_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      contract_id INTEGER REFERENCES contracts(id) ON DELETE CASCADE,
+      version INTEGER NOT NULL,
+      reviewed_by INTEGER REFERENCES users(id),
+      reviewed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      total_risks INTEGER DEFAULT 0,
+      high_count INTEGER DEFAULT 0,
+      medium_count INTEGER DEFAULT 0,
+      low_count INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS risk_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_history_id INTEGER REFERENCES review_history(id) ON DELETE CASCADE,
+      contract_id INTEGER REFERENCES contracts(id) ON DELETE CASCADE,
+      rule_id INTEGER REFERENCES review_rules(id),
+      rule_name TEXT,
+      risk_level TEXT NOT NULL,
+      matched_content TEXT,
+      paragraph TEXT,
+      description TEXT,
+      suggestion TEXT,
+      status TEXT DEFAULT 'pending',
+      exempt_reason TEXT,
+      handled_by INTEGER REFERENCES users(id),
+      handled_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS risk_audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      risk_record_id INTEGER REFERENCES risk_records(id) ON DELETE CASCADE,
+      contract_id INTEGER REFERENCES contracts(id),
+      action TEXT NOT NULL,
+      old_status TEXT,
+      new_status TEXT,
+      reason TEXT,
+      operator_id INTEGER REFERENCES users(id),
+      operator_name TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 }
 
@@ -529,6 +587,9 @@ function seedData() {
       }
     });
   });
+
+  seedReviewRules(userIds[0]);
+  seedRiskyContracts(userIds[0], [userIds[2], userIds[3], userIds[4]], templateIds);
 }
 
 function migrateDatabase() {
@@ -577,6 +638,364 @@ function migrateDatabase() {
     db.exec('ALTER TABLE contracts ADD COLUMN void_initiated_by INTEGER');
     db.exec('ALTER TABLE contracts ADD COLUMN void_initiated_at DATETIME');
   }
+
+  const newTables = ['review_rules', 'review_history', 'risk_records', 'risk_audit_logs'];
+  newTables.forEach((tableName) => {
+    const existing = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(tableName);
+    if (!existing) {
+      if (tableName === 'review_rules') {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS review_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            contract_type TEXT NOT NULL DEFAULT 'all',
+            risk_level TEXT NOT NULL DEFAULT 'medium',
+            pattern TEXT NOT NULL,
+            is_regex INTEGER DEFAULT 0,
+            description TEXT,
+            suggestion TEXT,
+            is_enabled INTEGER DEFAULT 1,
+            created_by INTEGER REFERENCES users(id),
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+      } else if (tableName === 'review_history') {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS review_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contract_id INTEGER REFERENCES contracts(id) ON DELETE CASCADE,
+            version INTEGER NOT NULL,
+            reviewed_by INTEGER REFERENCES users(id),
+            reviewed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            total_risks INTEGER DEFAULT 0,
+            high_count INTEGER DEFAULT 0,
+            medium_count INTEGER DEFAULT 0,
+            low_count INTEGER DEFAULT 0
+          )
+        `);
+      } else if (tableName === 'risk_records') {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS risk_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            review_history_id INTEGER REFERENCES review_history(id) ON DELETE CASCADE,
+            contract_id INTEGER REFERENCES contracts(id) ON DELETE CASCADE,
+            rule_id INTEGER REFERENCES review_rules(id),
+            rule_name TEXT,
+            risk_level TEXT NOT NULL,
+            matched_content TEXT,
+            paragraph TEXT,
+            description TEXT,
+            suggestion TEXT,
+            status TEXT DEFAULT 'pending',
+            exempt_reason TEXT,
+            handled_by INTEGER REFERENCES users(id),
+            handled_at DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+      } else if (tableName === 'risk_audit_logs') {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS risk_audit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            risk_record_id INTEGER REFERENCES risk_records(id) ON DELETE CASCADE,
+            contract_id INTEGER REFERENCES contracts(id),
+            action TEXT NOT NULL,
+            old_status TEXT,
+            new_status TEXT,
+            reason TEXT,
+            operator_id INTEGER REFERENCES users(id),
+            operator_name TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+      }
+    }
+  });
+}
+
+function seedReviewRules(createdBy: number) {
+  const rules = [
+    {
+      name: '缺少违约责任条款',
+      contract_type: 'all',
+      risk_level: 'high',
+      pattern: '违约责任',
+      is_regex: 0,
+      description: '合同中未包含违约责任条款，一方违约时难以追究责任',
+      suggestion: '建议添加"违约责任"章节，明确双方违约情形及违约金计算方式',
+    },
+    {
+      name: '付款周期超过90天',
+      contract_type: '采购合同',
+      risk_level: 'high',
+      pattern: '(9[1-9]|[1-9]\\d{2,})\\s*天',
+      is_regex: 1,
+      description: '付款周期超过90天，资金占用风险较高',
+      suggestion: '建议缩短付款周期至30-60天，或增加逾期付款违约金条款',
+    },
+    {
+      name: '合同金额为0',
+      contract_type: 'all',
+      risk_level: 'high',
+      pattern: '',
+      is_regex: 0,
+      description: '合同金额为0，可能是数据录入错误或存在无偿转移风险',
+      suggestion: '请核实合同金额，如为无偿合同请在条款中明确说明',
+    },
+    {
+      name: '有效期结束日期早于开始日期',
+      contract_type: 'all',
+      risk_level: 'high',
+      pattern: '',
+      is_regex: 0,
+      description: '合同有效期结束日期早于开始日期，属于明显的逻辑错误',
+      suggestion: '请检查并修正合同有效期的开始和结束日期',
+    },
+    {
+      name: '保密期限为空',
+      contract_type: '保密协议',
+      risk_level: 'high',
+      pattern: '',
+      is_regex: 0,
+      description: '保密协议未约定保密期限，保密义务终止时间不明确',
+      suggestion: '建议明确约定保密期限，一般为2-5年或直至信息公开',
+    },
+    {
+      name: '缺少争议解决条款',
+      contract_type: 'all',
+      risk_level: 'medium',
+      pattern: '争议解决|诉讼|仲裁',
+      is_regex: 0,
+      description: '合同未约定争议解决方式，发生纠纷时管辖不明确',
+      suggestion: '建议添加争议解决条款，明确约定管辖法院或仲裁机构',
+    },
+    {
+      name: '缺少不可抗力条款',
+      contract_type: 'all',
+      risk_level: 'medium',
+      pattern: '不可抗力',
+      is_regex: 0,
+      description: '合同未约定不可抗力条款，免责情形不明确',
+      suggestion: '建议添加不可抗力条款，明确不可抗力的范围及免责方式',
+    },
+    {
+      name: '合同期限超过20年',
+      contract_type: '租赁合同',
+      risk_level: 'high',
+      pattern: '(2[1-9]|[3-9]\\d|\\d{3,})\\s*年',
+      is_regex: 1,
+      description: '根据《民法典》规定，租赁合同期限不得超过20年',
+      suggestion: '建议将租赁期限缩短至20年以内，超过部分无效',
+    },
+    {
+      name: '缺少合同生效条件',
+      contract_type: 'all',
+      risk_level: 'low',
+      pattern: '本合同.*生效|合同自.*生效',
+      is_regex: 0,
+      description: '合同未明确约定生效条件，生效时间可能存在争议',
+      suggestion: '建议明确合同生效条件，如"本合同自双方签字盖章之日起生效"',
+    },
+    {
+      name: '金额大小写不一致',
+      contract_type: '采购合同',
+      risk_level: 'medium',
+      pattern: '',
+      is_regex: 0,
+      description: '合同金额的大写与小写表述不一致',
+      suggestion: '请核实并统一合同金额的大小写表述',
+    },
+    {
+      name: '缺少保密条款',
+      contract_type: '劳动合同',
+      risk_level: 'medium',
+      pattern: '保密|商业秘密',
+      is_regex: 0,
+      description: '劳动合同未包含保密条款，企业商业秘密保护不足',
+      suggestion: '建议在劳动合同中增加保密条款或单独签订保密协议',
+    },
+    {
+      name: '试用期超过法定期限',
+      contract_type: '劳动合同',
+      risk_level: 'high',
+      pattern: '试用期.*(6[1-9]|[7-9]\\d|\\d{3,})\\s*天|试用期.*[7-9]\\s*个月',
+      is_regex: 1,
+      description: '根据《劳动合同法》，试用期最长不得超过6个月',
+      suggestion: '请根据劳动合同期限调整试用期，3年以上固定期限合同试用期不得超过6个月',
+    },
+  ];
+
+  const insertRule = db.prepare(`
+    INSERT INTO review_rules (name, contract_type, risk_level, pattern, is_regex, description, suggestion, is_enabled, created_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+  `);
+
+  rules.forEach((rule) => {
+    insertRule.run(
+      rule.name,
+      rule.contract_type,
+      rule.risk_level,
+      rule.pattern,
+      rule.is_regex,
+      rule.description,
+      rule.suggestion,
+      createdBy,
+    );
+  });
+}
+
+function seedRiskyContracts(adminId: number, userIds: number[], templateIds: number[]) {
+  function generateContractNo() {
+    const date = new Date();
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    const rand = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+    return `HT${y}${m}${d}${rand}`;
+  }
+
+  function fillTemplate(content: string, vars: Record<string, string>): string {
+    let result = content;
+    Object.entries(vars).forEach(([k, v]) => {
+      result = result.replace(new RegExp(`\\{\\{${k}\\}\\}`, 'g'), String(v));
+    });
+    return result;
+  }
+
+  const today = new Date();
+  const fmtDate = (d: Date) => d.toISOString().split('T')[0];
+  const addDays = (d: Date, days: number) => {
+    const nd = new Date(d);
+    nd.setDate(nd.getDate() + days);
+    return nd;
+  };
+
+  const insertContract = db.prepare(`
+    INSERT INTO contracts (contract_no, title, template_id, content, party_a, party_b, amount, effective_date, expiry_date, status, created_by, version)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, 1)
+  `);
+  const insertSigner = db.prepare(`
+    INSERT INTO contract_signers (contract_id, user_id, sign_order, status) VALUES (?, ?, ?, ?)
+  `);
+
+  const template0Content = db.prepare('SELECT content FROM templates WHERE id = ?').get(templateIds[0]) as any;
+  const template1Content = db.prepare('SELECT content FROM templates WHERE id = ?').get(templateIds[1]) as any;
+  const template2Content = db.prepare('SELECT content FROM templates WHERE id = ?').get(templateIds[2]) as any;
+
+  const riskyContracts = [
+    {
+      title: '【高风险】金额为0的采购合同',
+      templateId: templateIds[1],
+      templateContent: template1Content.content,
+      party_a: '北京科技有限公司',
+      party_b: '风险供应商A',
+      amount: 0,
+      effectiveDate: fmtDate(today),
+      expiryDate: fmtDate(addDays(today, 90)),
+      signers: [adminId, userIds[1]],
+      vars: {
+        合同编号: generateContractNo(),
+        甲方名称: '北京科技有限公司',
+        乙方名称: '风险供应商A',
+        货物名称: '测试货物',
+        数量: '100',
+        单价: '0',
+        总金额: '0',
+        大写金额: '零元整',
+        交货地点: '北京市海淀区',
+        交货时间: fmtDate(addDays(today, 7)),
+        付款方式: '货到验收合格后一次性支付，付款周期180天',
+        签订日期: fmtDate(today),
+      },
+      removeSections: ['违约责任'],
+    },
+    {
+      title: '【高风险】日期异常的劳动合同',
+      templateId: templateIds[0],
+      templateContent: template0Content.content,
+      party_a: '北京科技有限公司',
+      party_b: '风险员工B',
+      amount: 8000,
+      effectiveDate: fmtDate(addDays(today, 365)),
+      expiryDate: fmtDate(today),
+      signers: [adminId, userIds[2]],
+      vars: {
+        合同编号: generateContractNo(),
+        甲方名称: '北京科技有限公司',
+        乙方名称: '风险员工B',
+        合同期限: '一年',
+        开始日期: fmtDate(addDays(today, 365)),
+        结束日期: fmtDate(today),
+        工作地点: '北京市朝阳区',
+        工作岗位: '测试岗位',
+        月工资: '8000',
+        签订日期: fmtDate(today),
+      },
+      removeSections: ['保密'],
+      addTrialPeriod: '试用期8个月',
+    },
+    {
+      title: '【高风险】缺少保密期限的保密协议',
+      templateId: templateIds[2],
+      templateContent: template2Content.content,
+      party_a: '北京科技有限公司',
+      party_b: '风险合作方C',
+      amount: 0,
+      effectiveDate: fmtDate(today),
+      expiryDate: fmtDate(addDays(today, 365)),
+      signers: [adminId, userIds[0]],
+      vars: {
+        协议编号: generateContractNo(),
+        甲方名称: '北京科技有限公司',
+        乙方名称: '风险合作方C',
+        保密期限: '',
+        违约金: '50000',
+        签订日期: fmtDate(today),
+      },
+      removeSections: ['违约责任', '争议解决', '不可抗力'],
+    },
+  ];
+
+  riskyContracts.forEach((c) => {
+    let content = fillTemplate(c.templateContent, c.vars);
+
+    if (c.removeSections) {
+      c.removeSections.forEach((section) => {
+        content = content.replace(new RegExp(`<h3>[一二三四五六七八九十]*、[^<]*${section}[^<]*</h3>`, 'g'), '');
+        content = content.replace(new RegExp(`<p>[^<]*${section}[^<]*</p>`, 'g'), '');
+      });
+    }
+
+    if (c.addTrialPeriod) {
+      content = content.replace(
+        '<h3>二、工作内容与地点</h3>',
+        `<p>试用期：${c.addTrialPeriod}</p>\n<h3>二、工作内容与地点</h3>`,
+      );
+    }
+
+    const info = insertContract.run(
+      c.vars['合同编号'] || generateContractNo(),
+      c.title,
+      c.templateId,
+      content,
+      c.party_a,
+      c.party_b,
+      c.amount,
+      c.effectiveDate,
+      c.expiryDate,
+      adminId,
+    );
+
+    const contractId = Number(info.lastInsertRowid);
+    c.signers.forEach((uid, idx) => {
+      insertSigner.run(contractId, uid, idx + 1, 'pending');
+    });
+
+    db.prepare('INSERT INTO contract_versions (contract_id, version, content, changed_by) VALUES (?, 1, ?, ?)').run(
+      contractId, content, adminId,
+    );
+  });
 }
 
 initDatabase();
