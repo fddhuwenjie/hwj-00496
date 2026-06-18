@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api, type Contract, type User } from '../lib/api';
 import { STATUS_LABEL, STATUS_COLOR, useStore } from '../store';
-import { ArrowLeft, Send, Edit2, FileX, History, Users, FileText } from 'lucide-react';
+import { ArrowLeft, Send, Edit2, FileX, History, Users, FileText, CheckCircle, XCircle, Clock } from 'lucide-react';
 
 export default function ContractDetail() {
   const { id } = useParams();
@@ -15,11 +15,24 @@ export default function ContractDetail() {
   const [showVoid, setShowVoid] = useState(false);
   const [voidReason, setVoidReason] = useState('');
   const [selectedSigners, setSelectedSigners] = useState<number[]>([]);
+  const [voidConfirmations, setVoidConfirmations] = useState<any[]>([]);
+  const [voidInfo, setVoidInfo] = useState<any>(null);
+  const [showVoidConfirm, setShowVoidConfirm] = useState(false);
 
   const load = async () => {
     const c = await api.getContract(Number(id));
     setContract(c);
     setSelectedSigners((c.signers || []).map((s) => s.user_id));
+    if (c.void_initiated_by) {
+      try {
+        const v = await api.getVoidConfirmations(Number(id));
+        setVoidConfirmations(v.confirmations || []);
+        setVoidInfo({ void_initiated_by: v.void_initiated_by, void_reason: v.void_reason, void_initiated_at: v.void_initiated_at });
+      } catch {}
+    } else {
+      setVoidConfirmations([]);
+      setVoidInfo(null);
+    }
   };
 
   useEffect(() => {
@@ -31,11 +44,13 @@ export default function ContractDetail() {
     return <div className="p-10 text-center text-gray-400">加载中...</div>;
   }
 
-  const canEdit = contract.status === 'draft' && !contract.is_voided;
-  const canStartSign = contract.status === 'draft' && !contract.is_voided && (contract.signers || []).length > 0;
-  const canVoid = !contract.is_voided && (user?.role === 'admin' || contract.created_by === user?.id);
+  const canEdit = contract.status === 'draft' && !contract.is_voided && !contract.void_initiated_by;
+  const canStartSign = contract.status === 'draft' && !contract.is_voided && !contract.void_initiated_by && (contract.signers || []).length > 0;
+  const canVoid = !contract.is_voided && !contract.void_initiated_by && (user?.role === 'admin' || contract.created_by === user?.id);
+  const myVoidConf = voidConfirmations.find((v) => v.user_id === user?.id);
+  const needConfirmVoid = contract.void_initiated_by && !contract.is_voided && myVoidConf && !myVoidConf.confirmed;
   const isSigned = contract.status === 'signed';
-  const isReadOnly = isSigned || contract.is_voided;
+  const isReadOnly = isSigned || contract.is_voided || !!contract.void_initiated_by;
 
   const handleStartSign = async () => {
     if (!confirm('确认发起签署流程？发起后将通知所有签署人。')) return;
@@ -63,10 +78,32 @@ export default function ContractDetail() {
       alert('请填写作废原因');
       return;
     }
-    if (!confirm('确认作废此合同？此操作不可撤销。')) return;
+    const signedCount = (contract.signers || []).filter((s) => s.status === 'signed').length;
+    let msg = '确认作废此合同？';
+    if (signedCount > 0) {
+      msg = `此合同已有 ${signedCount} 人签署，发起作废后需要所有已签署方和创建人确认方可生效。确认发起？`;
+    } else {
+      msg += '此操作不可撤销。';
+    }
+    if (!confirm(msg)) return;
     try {
-      await api.voidContract(contract.id, voidReason);
+      const r = await api.voidContract(contract.id, voidReason);
       setShowVoid(false);
+      setVoidReason('');
+      alert(r.message);
+      load();
+    } catch (e: any) {
+      alert(e.message);
+    }
+  };
+
+  const handleConfirmVoid = async (confirmed: boolean) => {
+    const msg = confirmed ? '确认同意作废此合同？' : '确认反对此作废申请？';
+    if (!confirm(msg)) return;
+    try {
+      const r = await api.confirmVoid(contract.id, confirmed);
+      setShowVoidConfirm(false);
+      alert(r.message);
       load();
     } catch (e: any) {
       alert(e.message);
@@ -83,11 +120,28 @@ export default function ContractDetail() {
 
   const renderContentWithSignatures = () => {
     let html = contract.content;
+    const positionedSignatures: string[] = [];
+    const appendSignatures: string[] = [];
+
     (contract.signers || []).forEach((s) => {
       if (s.status === 'signed' && s.signature_data) {
-        html += `<div style="display:inline-block;margin:10px;padding:5px;border:1px dashed #ccc;"><img src="${s.signature_data}" style="max-width:150px;max-height:60px;" /><div style="font-size:10px;color:#666;text-align:center;">${s.user_name}<br/>${s.signed_at?.split(' ')[0] || ''}</div></div>`;
+        const signBlock = `<img src="${s.signature_data}" style="max-width:120px;max-height:50px;display:block;" /><div style="font-size:10px;color:#666;text-align:center;white-space:nowrap;">${s.user_name}<br/>${s.signed_at?.split(' ')[0] || ''}</div>`;
+
+        if (s.position_x !== null && s.position_x !== undefined && s.position_y !== null && s.position_y !== undefined) {
+          positionedSignatures.push(
+            `<div style="position:absolute;left:${s.position_x - 60}px;top:${s.position_y - 30}px;pointer-events:none;text-align:center;padding:4px;background:rgba(255,255,255,0.9);border:1px solid #e5e7eb;border-radius:4px;z-index:10;">${signBlock}</div>`
+          );
+        } else {
+          appendSignatures.push(
+            `<div style="display:inline-block;margin:10px;padding:8px;border:1px dashed #ccc;border-radius:4px;">${signBlock}</div>`
+          );
+        }
       }
     });
+
+    if (positionedSignatures.length > 0 || appendSignatures.length > 0) {
+      html = `<div style="position:relative;">${html}${positionedSignatures.join('')}${appendSignatures.length > 0 ? `<div style="margin-top:20px;padding-top:20px;border-top:1px dashed #ccc;">${appendSignatures.join('')}</div>` : ''}</div>`;
+    }
     return html;
   };
 
@@ -103,10 +157,16 @@ export default function ContractDetail() {
             <p className="text-sm text-gray-500">编号：{contract.contract_no}</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className={`text-xs px-3 py-1 rounded-full ${STATUS_COLOR[contract.status]}`}>
             {contract.is_voided ? '已作废' : STATUS_LABEL[contract.status]}
           </span>
+          {contract.void_initiated_by && !contract.is_voided && (
+            <span className="text-xs px-3 py-1 rounded-full bg-orange-100 text-orange-700 border border-orange-200 flex items-center gap-1">
+              <Clock className="w-3 h-3" />
+              作废确认中 ({voidConfirmations.filter((v) => v.confirmed).length}/{voidConfirmations.length})
+            </span>
+          )}
           {contract.version > 1 && (
             <button
               onClick={() => setShowHistory(true)}
@@ -145,6 +205,24 @@ export default function ContractDetail() {
                   设置签署人
                 </button>
               )}
+            </>
+          )}
+          {needConfirmVoid && (
+            <>
+              <button
+                onClick={() => handleConfirmVoid(true)}
+                className="text-xs px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1"
+              >
+                <CheckCircle className="w-3.5 h-3.5" />
+                确认作废
+              </button>
+              <button
+                onClick={() => handleConfirmVoid(false)}
+                className="text-xs px-3 py-1.5 bg-gray-100 text-gray-600 rounded hover:bg-gray-200 flex items-center gap-1"
+              >
+                <XCircle className="w-3.5 h-3.5" />
+                反对作废
+              </button>
             </>
           )}
           {canVoid && (
@@ -258,6 +336,43 @@ export default function ContractDetail() {
               )}
             </div>
           </div>
+
+          {contract.void_initiated_by && !contract.is_voided && (
+            <div className="bg-orange-50 rounded-xl p-4 border border-orange-200">
+              <h3 className="font-semibold text-sm text-orange-700 mb-2 flex items-center gap-1.5">
+                <Clock className="w-4 h-4" />
+                作废确认流程
+              </h3>
+              <p className="text-xs text-orange-600 mb-3">
+                <span className="font-medium">作废原因：</span>{voidInfo?.void_reason || '-'}
+              </p>
+              <div className="space-y-2">
+                {voidConfirmations.map((v) => (
+                  <div key={v.id} className="flex items-center justify-between text-xs bg-white/60 p-2 rounded">
+                    <span className="text-gray-700 font-medium">{v.user_name}</span>
+                    <span className={`flex items-center gap-1 ${v.confirmed ? 'text-green-600' : 'text-gray-400'}`}>
+                      {v.confirmed ? (
+                        <><CheckCircle className="w-3.5 h-3.5" /> 已确认</>
+                      ) : (
+                        <><Clock className="w-3.5 h-3.5" /> 待确认</>
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 pt-3 border-t border-orange-200">
+                <div className="w-full bg-orange-200 rounded-full h-1.5">
+                  <div
+                    className="bg-orange-500 h-1.5 rounded-full transition-all"
+                    style={{ width: `${voidConfirmations.length > 0 ? (voidConfirmations.filter((v) => v.confirmed).length / voidConfirmations.length) * 100 : 0}%` }}
+                  />
+                </div>
+                <p className="text-xs text-orange-600 mt-1.5 text-right">
+                  {voidConfirmations.filter((v) => v.confirmed).length} / {voidConfirmations.length} 已确认
+                </p>
+              </div>
+            </div>
+          )}
 
           {contract.is_voided && (
             <div className="bg-red-50 rounded-xl p-4 border border-red-200">

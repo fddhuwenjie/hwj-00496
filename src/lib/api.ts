@@ -40,6 +40,9 @@ export interface ContractSigner {
   signature_data?: string;
   sign_ip?: string;
   reject_reason?: string;
+  position_x?: number | null;
+  position_y?: number | null;
+  sign_page?: number;
 }
 
 export interface Contract {
@@ -63,6 +66,8 @@ export interface Contract {
   version: number;
   is_voided: number;
   void_reason?: string;
+  void_initiated_by?: number | null;
+  void_initiated_at?: string | null;
   signers?: ContractSigner[];
   versions?: ContractVersion[];
 }
@@ -167,12 +172,16 @@ export const api = {
   updateContract: (id: number, data: any) =>
     request<void>(`/contracts/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   startSign: (id: number) => request<void>(`/contracts/${id}/start-sign`, { method: 'POST' }),
-  signContract: (id: number, signatureData: string) =>
-    request<void>(`/contracts/${id}/sign`, { method: 'POST', body: JSON.stringify({ signatureData }) }),
+  signContract: (id: number, signatureData: string, position?: { x: number; y: number; page: number }) =>
+    request<void>(`/contracts/${id}/sign`, { method: 'POST', body: JSON.stringify({ signatureData, positionX: position?.x, positionY: position?.y, page: position?.page }) }),
   rejectContract: (id: number, reason: string) =>
     request<void>(`/contracts/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }),
   voidContract: (id: number, reason: string) =>
-    request<void>(`/contracts/${id}/void`, { method: 'POST', body: JSON.stringify({ reason }) }),
+    request<{ voided: boolean; message: string }>(`/contracts/${id}/void`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  getVoidConfirmations: (id: number) =>
+    request<any>(`/contracts/${id}/void-confirmations`),
+  confirmVoid: (id: number, confirmed: boolean) =>
+    request<{ voided: boolean; message: string }>(`/contracts/${id}/void-confirm`, { method: 'POST', body: JSON.stringify({ confirmed }) }),
   setSigners: (contractId: number, signerIds: number[]) =>
     request<void>('/contracts/signers', { method: 'POST', body: JSON.stringify({ contractId, signerIds }) }),
   getContractVersions: (id: number) => request<ContractVersion[]>(`/contracts/${id}/versions`),

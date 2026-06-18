@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api, type Contract, type Signature } from '../lib/api';
 import { useStore } from '../store';
-import { ArrowLeft, CheckCircle, XCircle, FileSignature, RefreshCw } from 'lucide-react';
+import { ArrowLeft, CheckCircle, XCircle, FileSignature, RefreshCw, MapPin, Trash2 } from 'lucide-react';
 
 export default function ContractSign() {
   const { id } = useParams();
@@ -17,6 +17,8 @@ export default function ContractSign() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawingRef = useRef(false);
   const lastPosRef = useRef<{ x: number; y: number } | null>(null);
+  const contractContentRef = useRef<HTMLDivElement>(null);
+  const [signPosition, setSignPosition] = useState<{ x: number; y: number; page: number } | null>(null);
 
   const load = async () => {
     const c = await api.getContract(Number(id));
@@ -103,14 +105,30 @@ export default function ContractSign() {
     load();
   };
 
+  const handleContentClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!canSign || !allPrevSigned) return;
+    const container = contractContentRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const x = Math.round(e.clientX - rect.left);
+    const y = Math.round(e.clientY - rect.top);
+    setSignPosition({ x, y, page: 1 });
+  };
+
+  const clearSignPosition = () => setSignPosition(null);
+
   const handleSign = async () => {
     if (!signatureData) {
       alert('请先选择或创建签章');
       return;
     }
+    if (!signPosition) {
+      alert('请先在合同正文上点击选择签章位置');
+      return;
+    }
     if (!confirm('确认签署此合同？签署后不可撤销。')) return;
     try {
-      await api.signContract(contract.id, signatureData);
+      await api.signContract(contract.id, signatureData, signPosition);
       alert('签署成功');
       navigate(`/contract/${contract.id}`);
     } catch (e: any) {
@@ -168,9 +186,45 @@ export default function ContractSign() {
             </div>
             <div className="p-6 bg-gray-50 max-h-[70vh] overflow-auto">
               <div
-                className="bg-white shadow p-10 mx-auto max-w-3xl"
-                dangerouslySetInnerHTML={{ __html: contract.content }}
-              />
+                ref={contractContentRef}
+                onClick={handleContentClick}
+                className={`bg-white shadow p-10 mx-auto max-w-3xl relative ${
+                  canSign && allPrevSigned ? 'cursor-crosshair' : ''
+                }`}
+                style={{ minHeight: '800px' }}
+              >
+                <div dangerouslySetInnerHTML={{ __html: contract.content }} />
+
+                {canSign && allPrevSigned && signPosition && (
+                  <>
+                    <div
+                      className="absolute pointer-events-none"
+                      style={{
+                        left: signPosition.x - 60,
+                        top: signPosition.y - 30,
+                        width: '120px',
+                      }}
+                    >
+                      {signatureData ? (
+                        <div className="text-center">
+                          <img src={signatureData} className="max-h-[50px] mx-auto border border-dashed border-green-500 p-1 bg-white/80 rounded" />
+                          <p className="text-[10px] text-green-600 mt-0.5">预览签章位置</p>
+                        </div>
+                      ) : (
+                        <div className="w-16 h-8 border-2 border-dashed border-indigo-500 bg-indigo-100/50 rounded mx-auto flex items-center justify-center">
+                          <MapPin className="w-4 h-4 text-indigo-500" />
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {canSign && allPrevSigned && !signPosition && (
+                  <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-amber-100 border border-amber-300 text-amber-800 px-4 py-2 rounded-lg text-sm shadow-sm pointer-events-none">
+                    💡 请在合同正文上点击选择签章插入位置
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -242,6 +296,31 @@ export default function ContractSign() {
               <p className="text-xs text-gray-400 text-center py-3">暂无签章，请新建</p>
             )}
           </div>
+
+          {canSign && allPrevSigned && (
+            <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+              <h3 className="font-semibold text-sm mb-3 flex items-center gap-1.5">
+                <MapPin className="w-4 h-4 text-indigo-500" />
+                签章位置
+              </h3>
+              {signPosition ? (
+                <div>
+                  <p className="text-xs text-gray-600 mb-2">
+                    已选择位置：X={signPosition.x}px, Y={signPosition.y}px
+                  </p>
+                  <button
+                    onClick={clearSignPosition}
+                    className="w-full py-1.5 border border-gray-300 rounded-lg text-xs text-gray-600 hover:bg-gray-50 flex items-center justify-center gap-1"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    清除位置，重新选择
+                  </button>
+                </div>
+              ) : (
+                <p className="text-xs text-amber-600 bg-amber-50 p-2 rounded">请在左侧合同正文点击选择位置</p>
+              )}
+            </div>
+          )}
 
           {canSign && allPrevSigned && (
             <div className="space-y-2">

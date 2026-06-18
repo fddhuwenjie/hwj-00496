@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, type Template, type TemplateVariable, type User } from '../lib/api';
-import { ArrowLeft, Eye, Save, FileText } from 'lucide-react';
+import { ArrowLeft, Eye, Save, FileText, Upload, X } from 'lucide-react';
 
 export default function ContractCreate() {
   const navigate = useNavigate();
@@ -24,6 +24,8 @@ export default function ContractCreate() {
   });
   const [previewHtml, setPreviewHtml] = useState('');
   const [showPreview, setShowPreview] = useState(false);
+  const [uploadedFileName, setUploadedFileName] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     api.getTemplates().then(setTemplates).catch(() => {});
@@ -62,6 +64,33 @@ export default function ContractCreate() {
       ? form.signerIds.filter((x: number) => x !== uid)
       : [...form.signerIds, uid];
     setForm({ ...form, signerIds: ids });
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    if (ext !== 'html' && ext !== 'htm') {
+      alert('请上传HTML格式的合同文件（PDF请先转换为HTML）');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const content = ev.target?.result as string;
+      setForm({ ...form, content, title: form.title || file.name.replace(/\.[^/.]+$/, '') });
+      setUploadedFileName(file.name);
+      setSelectedTemplate(null);
+    };
+    reader.readAsText(file);
+  };
+
+  const clearUploadedFile = () => {
+    setUploadedFileName('');
+    setForm({ ...form, content: '' });
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const doPreview = async () => {
@@ -118,6 +147,47 @@ export default function ContractCreate() {
                   <option key={t.id} value={t.id}>[{t.category}] {t.name}</option>
                 ))}
               </select>
+            </div>
+
+            <div className="border-t border-gray-100 pt-4">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="h-px flex-1 bg-gray-200"></div>
+                <span className="text-xs text-gray-400 px-2">或直接上传合同文件</span>
+                <div className="h-px flex-1 bg-gray-200"></div>
+              </div>
+
+              {!uploadedFileName ? (
+                <label className="block cursor-pointer">
+                  <div className="border-2 border-dashed border-gray-300 rounded-xl p-6 text-center hover:border-indigo-400 hover:bg-indigo-50/30 transition">
+                    <Upload className="w-10 h-10 mx-auto text-gray-400 mb-2" />
+                    <p className="text-sm font-medium text-gray-700">点击上传合同文件</p>
+                    <p className="text-xs text-gray-400 mt-1">支持 .html / .htm 格式（PDF请先转换为HTML）</p>
+                  </div>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".html,.htm"
+                    onChange={handleFileUpload}
+                    className="hidden"
+                  />
+                </label>
+              ) : (
+                <div className="flex items-center justify-between p-3 bg-indigo-50 border border-indigo-200 rounded-lg">
+                  <div className="flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-indigo-500" />
+                    <div>
+                      <p className="text-sm font-medium text-gray-800">{uploadedFileName}</p>
+                      <p className="text-xs text-gray-500">文件内容已加载到合同正文</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={clearUploadedFile}
+                    className="p-1.5 hover:bg-white rounded-lg text-gray-400 hover:text-red-500 transition"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
             </div>
 
             {selectedTemplate && (selectedTemplate.variables || []).length > 0 && (

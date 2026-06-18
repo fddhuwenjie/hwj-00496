@@ -254,8 +254,8 @@ router.put('/:id', (req: AuthRequest, res: Response) => {
     );
 
     if (signerIds) {
-      db.prepare('DELETE FROM contract_signers WHERE contract_id = ? AND status != "signed"').run(contractId);
-      const signed = db.prepare('SELECT user_id, sign_order FROM contract_signers WHERE contract_id = ? AND status = "signed" ORDER BY sign_order').all(contractId) as any[];
+      db.prepare("DELETE FROM contract_signers WHERE contract_id = ? AND status != 'signed'").run(contractId);
+      const signed = db.prepare("SELECT user_id, sign_order FROM contract_signers WHERE contract_id = ? AND status = 'signed' ORDER BY sign_order").all(contractId) as any[];
       const signedUids = signed.map((s: any) => s.user_id);
       const insertSigner = db.prepare('INSERT INTO contract_signers (contract_id, user_id, sign_order, status) VALUES (?, ?, ?, ?)');
       let order = signed.length + 1;
@@ -279,7 +279,10 @@ router.put('/:id', (req: AuthRequest, res: Response) => {
 router.post('/:id/sign', (req: AuthRequest, res: Response) => {
   try {
     const contractId = Number(req.params.id);
-    const { signatureData, positionX, positionY, page } = req.body;
+    const { signatureData, position, positionX, positionY, page } = req.body;
+    const px = position?.x ?? positionX;
+    const py = position?.y ?? positionY;
+    const pg = position?.page ?? page;
     const contract = db.prepare('SELECT * FROM contracts WHERE id = ?').get(contractId) as any;
     if (!contract) {
       res.status(404).json({ success: false, error: '合同不存在' });
@@ -313,9 +316,14 @@ router.post('/:id/sign', (req: AuthRequest, res: Response) => {
 
     db.prepare(`
       UPDATE contract_signers
-      SET status = 'signed', signed_at = ?, signature_data = ?, sign_ip = ?
+      SET status = 'signed', signed_at = ?, signature_data = ?, sign_ip = ?,
+          position_x = ?, position_y = ?, sign_page = ?
       WHERE id = ?
-    `).run(signedAt, signatureData || '', ip, mySigner.id);
+    `).run(signedAt, signatureData || '', ip,
+      px != null ? Number(px) : null,
+      py != null ? Number(py) : null,
+      pg != null ? Number(pg) : 1,
+      mySigner.id);
 
     db.prepare('INSERT INTO signature_logs (user_id, contract_id, action, sign_ip) VALUES (?, ?, ?, ?)').run(
       req.userId, contractId, 'sign', ip,
@@ -376,6 +384,23 @@ router.post('/:id/reject', (req: AuthRequest, res: Response) => {
   }
 });
 
+router.get('/:id/void-confirmations', (req: AuthRequest, res: Response) => {
+  try {
+    const contractId = Number(req.params.id);
+    const confirmations = db.prepare(`
+      SELECT vc.*, u.name as user_name, u.username
+      FROM void_confirmations vc
+      LEFT JOIN users u ON vc.user_id = u.id
+      WHERE vc.contract_id = ?
+      ORDER BY vc.created_at
+    `).all(contractId);
+    const contract = db.prepare('SELECT * FROM contracts WHERE id = ?').get(contractId) as any;
+    res.json({ success: true, data: { confirmations, void_initiated_by: contract?.void_initiated_by, void_reason: contract?.void_reason, void_initiated_at: contract?.void_initiated_at } });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 router.post('/:id/void', (req: AuthRequest, res: Response) => {
   try {
     const contractId = Number(req.params.id);
@@ -384,29 +409,126 @@ router.post('/:id/void', (req: AuthRequest, res: Response) => {
       res.status(404).json({ success: false, error: '合同不存在' });
       return;
     }
+    if (contract.is_voided) {
+      res.status(400).json({ success: false, error: '合同已作废' });
+      return;
+    }
     if (req.userRole !== 'admin' && contract.created_by !== req.userId) {
-      res.status(403).json({ success: false, error: '无权限作废' });
+      res.status(403).json({ success: false, error: '无权限发起作废' });
       return;
     }
 
-    const { reason, confirmedBy } = req.body;
-    const signers = db.prepare('SELECT * FROM contract_signers WHERE contract_id = ? AND status = "signed"').all(contractId);
+    const { reason } = req.body;
 
-    db.prepare('UPDATE contracts SET is_voided = 1, status = "voided", void_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(
-      reason || '', contractId,
+    const signedSigners = db.prepare("SELECT * FROM contract_signers WHERE contract_id = ? AND status = 'signed'").all(contractId) as any[];
+
+    db.prepare('UPDATE contracts SET void_reason = ?, void_initiated_by = ?, void_initiated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(
+      reason || '', req.userId, contractId,
+    );
+
+    db.prepare('DELETE FROM void_confirmations WHERE contract_id = ?').run(contractId);
+    const insertConf = db.prepare('INSERT OR IGNORE INTO void_confirmations (contract_id, user_id, confirmed) VALUES (?, ?, ?)');
+
+    const relevantUsers = new Set<number>();
+    relevantUsers.add(contract.created_by);
+    signedSigners.forEach((s) => relevantUsers.add(s.user_id));
+
+    relevantUsers.forEach((uid) => {
+      insertConf.run(contractId, uid, uid === req.userId ? 1 : 0);
+    });
+
+    const allSigned = signedSigners.length === 0;
+    if (allSigned) {
+      db.prepare("UPDATE contracts SET is_voided = 1, status = 'voided', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(contractId);
+      db.prepare('INSERT INTO signature_logs (user_id, contract_id, action, sign_ip) VALUES (?, ?, ?, ?)').run(
+        req.userId, contractId, 'void', getClientIp(req),
+      );
+      res.json({ success: true, data: { voided: true, message: '合同已作废' } });
+      return;
+    }
+
+    const insertNotif = db.prepare('INSERT INTO notifications (user_id, contract_id, message) VALUES (?, ?, ?)');
+    relevantUsers.forEach((uid) => {
+      if (uid !== req.userId) {
+        insertNotif.run(uid, contractId, `合同【${contract.title}】已发起作废申请，原因：${reason || '未填写'}，请您确认`);
+      }
+    });
+
+    db.prepare('INSERT INTO signature_logs (user_id, contract_id, action, sign_ip) VALUES (?, ?, ?, ?)').run(
+      req.userId, contractId, 'init_void', getClientIp(req),
+    );
+
+    res.json({ success: true, data: { voided: false, message: '已发起作废申请，等待其他签署方确认' } });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+router.post('/:id/void-confirm', (req: AuthRequest, res: Response) => {
+  try {
+    const contractId = Number(req.params.id);
+    const { confirmed } = req.body;
+    const contract = db.prepare('SELECT * FROM contracts WHERE id = ?').get(contractId) as any;
+    if (!contract) {
+      res.status(404).json({ success: false, error: '合同不存在' });
+      return;
+    }
+    if (contract.is_voided) {
+      res.status(400).json({ success: false, error: '合同已作废' });
+      return;
+    }
+    if (!contract.void_initiated_by) {
+      res.status(400).json({ success: false, error: '合同尚未发起作废申请' });
+      return;
+    }
+
+    const myConf = db.prepare('SELECT * FROM void_confirmations WHERE contract_id = ? AND user_id = ?').get(contractId, req.userId) as any;
+    if (!myConf) {
+      res.status(403).json({ success: false, error: '您无需确认此作废申请' });
+      return;
+    }
+
+    db.prepare('UPDATE void_confirmations SET confirmed = ?, confirmed_at = CURRENT_TIMESTAMP WHERE contract_id = ? AND user_id = ?').run(
+      confirmed ? 1 : 0, contractId, req.userId,
     );
 
     db.prepare('INSERT INTO signature_logs (user_id, contract_id, action, sign_ip) VALUES (?, ?, ?, ?)').run(
-      req.userId, contractId, 'void', getClientIp(req),
+      req.userId, contractId, confirmed ? 'confirm_void' : 'cancel_void', getClientIp(req),
     );
 
-    signers.forEach((s: any) => {
-      db.prepare('INSERT INTO notifications (user_id, contract_id, message) VALUES (?, ?, ?)').run(
-        s.user_id, contractId, `合同【${contract.title}】已被作废，原因：${reason || '未填写'}`,
-      );
-    });
+    if (!confirmed) {
+      db.prepare('UPDATE contracts SET void_initiated_by = NULL, void_initiated_at = NULL, void_reason = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(contractId);
+      db.prepare('DELETE FROM void_confirmations WHERE contract_id = ?').run(contractId);
+      const insertNotif = db.prepare('INSERT INTO notifications (user_id, contract_id, message) VALUES (?, ?, ?)');
+      const users = db.prepare('SELECT DISTINCT user_id FROM void_confirmations WHERE contract_id = ?').all(contractId) as any[];
+      users.forEach((u) => {
+        if (u.user_id !== req.userId) {
+          insertNotif.run(u.user_id, contractId, `合同【${contract.title}】的作废申请已被取消`);
+        }
+      });
+      res.json({ success: true, data: { message: '已取消作废申请' } });
+      return;
+    }
 
-    res.json({ success: true });
+    const total = (db.prepare('SELECT COUNT(*) as cnt FROM void_confirmations WHERE contract_id = ?').get(contractId) as any).cnt;
+    const confirmedCnt = (db.prepare('SELECT COUNT(*) as cnt FROM void_confirmations WHERE contract_id = ? AND confirmed = 1').get(contractId) as any).cnt;
+
+    if (confirmedCnt >= total) {
+      db.prepare("UPDATE contracts SET is_voided = 1, status = 'voided', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(contractId);
+      db.prepare('INSERT INTO signature_logs (user_id, contract_id, action, sign_ip) VALUES (?, ?, ?, ?)').run(
+        req.userId, contractId, 'void', getClientIp(req),
+      );
+      const insertNotif = db.prepare('INSERT INTO notifications (user_id, contract_id, message) VALUES (?, ?, ?)');
+      const users = db.prepare('SELECT DISTINCT user_id FROM void_confirmations WHERE contract_id = ?').all(contractId) as any[];
+      users.forEach((u) => {
+        if (u.user_id !== req.userId) {
+          insertNotif.run(u.user_id, contractId, `合同【${contract.title}】已完成所有确认，已正式作废`);
+        }
+      });
+      res.json({ success: true, data: { voided: true, message: '所有相关方已确认，合同已作废' } });
+    } else {
+      res.json({ success: true, data: { voided: false, message: `已确认，等待其他签署方（${confirmedCnt}/${total}）` } });
+    }
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }

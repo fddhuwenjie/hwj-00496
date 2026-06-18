@@ -76,7 +76,20 @@ function initDatabase() {
       signed_at DATETIME,
       signature_data TEXT,
       sign_ip TEXT,
-      reject_reason TEXT
+      reject_reason TEXT,
+      position_x INTEGER,
+      position_y INTEGER,
+      sign_page INTEGER DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS void_confirmations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      contract_id INTEGER REFERENCES contracts(id) ON DELETE CASCADE,
+      user_id INTEGER REFERENCES users(id),
+      confirmed INTEGER DEFAULT 0,
+      confirmed_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(contract_id, user_id)
     );
 
     CREATE TABLE IF NOT EXISTS signatures (
@@ -518,7 +531,56 @@ function seedData() {
   });
 }
 
+function migrateDatabase() {
+  const columns = db.prepare("PRAGMA table_info(contract_signers)").all() as any[];
+  const colNames = columns.map((c) => c.name);
+  if (!colNames.includes('position_x')) {
+    db.exec('ALTER TABLE contract_signers ADD COLUMN position_x INTEGER');
+  }
+  if (!colNames.includes('position_y')) {
+    db.exec('ALTER TABLE contract_signers ADD COLUMN position_y INTEGER');
+  }
+  if (!colNames.includes('sign_page')) {
+    db.exec('ALTER TABLE contract_signers ADD COLUMN sign_page INTEGER DEFAULT 1');
+  }
+
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='void_confirmations'").all() as any[];
+  if (tables.length === 0) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS void_confirmations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        contract_id INTEGER REFERENCES contracts(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES users(id),
+        confirmed INTEGER DEFAULT 0,
+        confirmed_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(contract_id, user_id)
+      )
+    `);
+  } else {
+    const voidCols = db.prepare("PRAGMA table_info(void_confirmations)").all() as any[];
+    const voidColNames = voidCols.map((c) => c.name);
+    if (!voidColNames.includes('confirmed')) {
+      db.exec('ALTER TABLE void_confirmations ADD COLUMN confirmed INTEGER DEFAULT 0');
+    }
+    if (!voidColNames.includes('confirmed_at')) {
+      db.exec('ALTER TABLE void_confirmations ADD COLUMN confirmed_at DATETIME');
+    }
+    if (!voidColNames.includes('created_at')) {
+      db.exec('ALTER TABLE void_confirmations ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP');
+    }
+  }
+
+  const contractCols = db.prepare("PRAGMA table_info(contracts)").all() as any[];
+  const contractColNames = contractCols.map((c) => c.name);
+  if (!contractColNames.includes('void_initiated_by')) {
+    db.exec('ALTER TABLE contracts ADD COLUMN void_initiated_by INTEGER');
+    db.exec('ALTER TABLE contracts ADD COLUMN void_initiated_at DATETIME');
+  }
+}
+
 initDatabase();
+migrateDatabase();
 seedData();
 
 export default db;
