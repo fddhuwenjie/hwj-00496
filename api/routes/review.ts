@@ -610,6 +610,10 @@ router.get('/dashboard', (req: AuthRequest, res: Response) => {
       typeSql += ' AND t.category = ?';
       typeParams.push(contract_type);
     }
+    if (risk_level) {
+      typeSql += ' AND r.risk_level = ?';
+      typeParams.push(risk_level);
+    }
     typeSql += ' ' + dateFilterSql;
     typeParams.push(...dateParams);
     typeSql += ' GROUP BY t.category ORDER BY total DESC';
@@ -623,9 +627,15 @@ router.get('/dashboard', (req: AuthRequest, res: Response) => {
              COUNT(*) as total
       FROM risk_records r
       INNER JOIN review_history rh ON r.review_history_id = rh.id
+      LEFT JOIN contracts c ON r.contract_id = c.id
+      LEFT JOIN templates t ON c.template_id = t.id
       WHERE 1=1
     `;
     const topParams: any[] = [];
+    if (contract_type) {
+      topSql += ' AND t.category = ?';
+      topParams.push(contract_type);
+    }
     if (risk_level) {
       topSql += ' AND r.risk_level = ?';
       topParams.push(risk_level);
