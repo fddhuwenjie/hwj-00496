@@ -17,6 +17,7 @@ import contractRoutes from './routes/contracts.js'
 import signatureRoutes from './routes/signatures.js'
 import statsRoutes from './routes/stats.js'
 import reviewRoutes from './routes/review.js'
+import nodeRoutes from './routes/nodes.js'
 import './db.js'
 
 // for esm mode
@@ -41,6 +42,7 @@ app.use('/api/contracts', contractRoutes)
 app.use('/api/signatures', signatureRoutes)
 app.use('/api/stats', statsRoutes)
 app.use('/api/review', reviewRoutes)
+app.use('/api/nodes', nodeRoutes)
 
 /**
  * health

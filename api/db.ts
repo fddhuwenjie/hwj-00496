@@ -184,6 +184,26 @@ function initDatabase() {
       operator_name TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS contract_nodes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      contract_id INTEGER NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+      node_name TEXT NOT NULL,
+      node_type TEXT NOT NULL DEFAULT 'other',
+      responsible_party TEXT,
+      planned_date DATE NOT NULL,
+      amount REAL DEFAULT 0,
+      deliverable TEXT,
+      status TEXT NOT NULL DEFAULT 'not_started',
+      completed_at DATETIME,
+      completed_by INTEGER REFERENCES users(id),
+      attachment_url TEXT,
+      remark TEXT,
+      sort_order INTEGER DEFAULT 0,
+      created_by INTEGER REFERENCES users(id),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 }
 
@@ -998,8 +1018,195 @@ function seedRiskyContracts(adminId: number, userIds: number[], templateIds: num
   });
 }
 
+function seedPerformanceNodes() {
+  const nodeCount = (db.prepare('SELECT COUNT(*) as count FROM contract_nodes').get() as any).count;
+  if (nodeCount > 0) return;
+
+  const admin = db.prepare("SELECT id FROM users WHERE username = 'admin1' LIMIT 1").get() as any;
+  if (!admin) return;
+  const adminId = admin.id;
+
+  const findContractId = (title: string): number | null => {
+    const row = db.prepare('SELECT id FROM contracts WHERE title = ? LIMIT 1').get(title) as any;
+    return row ? Number(row.id) : null;
+  };
+
+  const today = new Date();
+  const fmtDate = (d: Date) => d.toISOString().split('T')[0];
+  const fmtDateTime = (d: Date) => fmtDate(d) + ' 10:00:00';
+  const addDays = (d: Date, days: number) => {
+    const nd = new Date(d);
+    nd.setDate(nd.getDate() + days);
+    return nd;
+  };
+
+  const insertNode = db.prepare(`
+    INSERT INTO contract_nodes
+      (contract_id, node_name, node_type, responsible_party, planned_date, amount, deliverable, status, completed_at, completed_by, attachment_url, remark, sort_order, created_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  type SeedNode = {
+    contractTitle: string;
+    node_name: string;
+    node_type: string;
+    responsible_party: string;
+    planned: number;
+    amount: number;
+    deliverable: string;
+    status: string;
+    completedOffset?: number;
+    attachment?: string;
+    remark?: string;
+  };
+
+  const nodes: SeedNode[] = [
+    {
+      contractTitle: '服务器采购合同（已签署）',
+      node_name: '预付款支付（30%）',
+      node_type: 'payment',
+      responsible_party: '北京科技有限公司（甲方）',
+      planned: -55,
+      amount: 60000,
+      deliverable: '合同签订后5个工作日内支付预付款6万元',
+      status: 'completed',
+      completedOffset: -54,
+      attachment: '/uploads/receipt/server-prepay.pdf',
+      remark: '银行转账已完成',
+    },
+    {
+      contractTitle: '服务器采购合同（已签署）',
+      node_name: '设备交付',
+      node_type: 'delivery',
+      responsible_party: '李四的设备公司（乙方）',
+      planned: -50,
+      amount: 0,
+      deliverable: '4台企业级服务器送达指定机房',
+      status: 'completed',
+      completedOffset: -48,
+      attachment: '/uploads/delivery/server-delivery.pdf',
+      remark: '验收无误',
+    },
+    {
+      contractTitle: '服务器采购合同（已签署）',
+      node_name: '到货验收',
+      node_type: 'acceptance',
+      responsible_party: '北京科技有限公司（甲方）',
+      planned: -45,
+      amount: 0,
+      deliverable: '设备通电测试与配置验收报告',
+      status: 'completed',
+      completedOffset: -44,
+      attachment: '/uploads/acceptance/server-acceptance.pdf',
+      remark: '验收合格',
+    },
+    {
+      contractTitle: '服务器采购合同（已签署）',
+      node_name: '尾款支付（70%）',
+      node_type: 'payment',
+      responsible_party: '北京科技有限公司（甲方）',
+      planned: 3,
+      amount: 140000,
+      deliverable: '验收合格后支付尾款14万元',
+      status: 'not_started',
+      remark: '请在验收合格后10个工作日内支付',
+    },
+    {
+      contractTitle: '张三劳动合同2025（已签署）',
+      node_name: '首月工资发放',
+      node_type: 'payment',
+      responsible_party: '北京科技有限公司（甲方）',
+      planned: -335,
+      amount: 13000,
+      deliverable: '入职首月工资发放',
+      status: 'completed',
+      completedOffset: -334,
+      remark: '已按时发放',
+    },
+    {
+      contractTitle: '张三劳动合同2025（已签署）',
+      node_name: '合同到期结算',
+      node_type: 'payment',
+      responsible_party: '北京科技有限公司（甲方）',
+      planned: -2,
+      amount: 13000,
+      deliverable: '合同到期当月工资及结算',
+      status: 'in_progress',
+      remark: '尚未完成结算',
+    },
+    {
+      contractTitle: '办公场地租赁保密协议（已签署）',
+      node_name: '保密义务持续履行',
+      node_type: 'other',
+      responsible_party: '王五（乙方）',
+      planned: 165,
+      amount: 0,
+      deliverable: '保密期限内持续履行保密义务',
+      status: 'in_progress',
+      remark: '保密期5年内持续有效',
+    },
+    {
+      contractTitle: '办公场地租赁保密协议（已签署）',
+      node_name: '年度保密审查',
+      node_type: 'acceptance',
+      responsible_party: '北京科技有限公司（甲方）',
+      planned: 5,
+      amount: 0,
+      deliverable: '年度保密措施执行情况审查',
+      status: 'not_started',
+      remark: '到期前需完成审查',
+    },
+    {
+      contractTitle: '2024年度员工劳动合同（已过期）',
+      node_name: '合同到期处理',
+      node_type: 'other',
+      responsible_party: '北京科技有限公司（甲方）',
+      planned: -30,
+      amount: 0,
+      deliverable: '到期合同续签或终止处理',
+      status: 'overdue',
+      remark: '已逾期未处理',
+    },
+    {
+      contractTitle: '王五劳动合同2026（待签署）',
+      node_name: '入职交付',
+      node_type: 'delivery',
+      responsible_party: '北京科技有限公司（甲方）',
+      planned: 6,
+      amount: 0,
+      deliverable: '办理入职并交付办公设备',
+      status: 'not_started',
+      remark: '签署后安排入职',
+    },
+  ];
+
+  let order = 0;
+  nodes.forEach((n) => {
+    const contractId = findContractId(n.contractTitle);
+    if (!contractId) return;
+    order += 1;
+    insertNode.run(
+      contractId,
+      n.node_name,
+      n.node_type,
+      n.responsible_party,
+      fmtDate(addDays(today, n.planned)),
+      n.amount,
+      n.deliverable,
+      n.status,
+      n.completedOffset !== undefined ? fmtDateTime(addDays(today, n.completedOffset)) : null,
+      n.status === 'completed' ? adminId : null,
+      n.attachment || null,
+      n.remark || null,
+      order,
+      adminId,
+    );
+  });
+}
+
 initDatabase();
 migrateDatabase();
 seedData();
+seedPerformanceNodes();
 
 export default db;

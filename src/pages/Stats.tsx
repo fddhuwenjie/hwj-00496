@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, type SignatureLog } from '../lib/api';
+import { api, type SignatureLog, type NodeDashboard } from '../lib/api';
 import { STATUS_LABEL, STATUS_COLOR } from '../store';
-import { BarChart3, Calendar, TrendingUp, Users, AlertTriangle, FileCheck } from 'lucide-react';
+import { BarChart3, Calendar, TrendingUp, Users, AlertTriangle, FileCheck, ListTodo, CalendarClock, CheckCircle, Clock } from 'lucide-react';
 
 export default function Stats() {
   const [overview, setOverview] = useState<any>(null);
@@ -11,6 +11,8 @@ export default function Stats() {
   const [logs, setLogs] = useState<SignatureLog[]>([]);
   const [calendarDate, setCalendarDate] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() + 1 });
   const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
+  const [nodeDashboard, setNodeDashboard] = useState<NodeDashboard | null>(null);
+  const [nodeFilter, setNodeFilter] = useState<{ node_type: string; responsible_party: string }>({ node_type: '', responsible_party: '' });
 
   useEffect(() => {
     api.getStatsOverview().then(setOverview).catch(() => {});
@@ -22,6 +24,18 @@ export default function Stats() {
   useEffect(() => {
     api.getCalendarEvents(calendarDate.year, calendarDate.month).then(setCalendarEvents).catch(() => {});
   }, [calendarDate]);
+
+  const loadNodeDashboard = () => {
+    const params: any = {};
+    if (nodeFilter.node_type) params.node_type = nodeFilter.node_type;
+    if (nodeFilter.responsible_party) params.responsible_party = nodeFilter.responsible_party;
+    api.getNodeDashboard(Object.keys(params).length ? params : undefined).then(setNodeDashboard).catch(() => {});
+  };
+
+  useEffect(() => {
+    loadNodeDashboard();
+  }, [nodeFilter]);
+
 
   const total = categoryDist.reduce((s, c) => s + c.cnt, 0) || 1;
 
@@ -274,6 +288,139 @@ export default function Stats() {
             )}
           </div>
         </div>
+      </div>
+
+      <div className="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
+        <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+          <h3 className="font-semibold flex items-center gap-2">
+            <ListTodo className="w-5 h-5 text-indigo-500" />
+            履约看板
+          </h3>
+          <div className="flex items-center gap-2 flex-wrap">
+            <select
+              value={nodeFilter.node_type}
+              onChange={(e) => setNodeFilter({ ...nodeFilter, node_type: e.target.value })}
+              className="px-2 py-1 border border-gray-200 rounded text-xs"
+            >
+              <option value="">全部类型</option>
+              <option value="payment">付款节点</option>
+              <option value="delivery">交付节点</option>
+              <option value="acceptance">验收节点</option>
+              <option value="other">其他节点</option>
+            </select>
+            <select
+              value={nodeFilter.responsible_party}
+              onChange={(e) => setNodeFilter({ ...nodeFilter, responsible_party: e.target.value })}
+              className="px-2 py-1 border border-gray-200 rounded text-xs"
+            >
+              <option value="">全部责任方</option>
+              {(nodeDashboard?.byResponsibleParty || []).map((r) => (
+                <option key={r.responsible_party} value={r.responsible_party}>{r.responsible_party}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+          <div className="p-3 bg-indigo-50 rounded-lg">
+            <p className="text-xs text-indigo-600 flex items-center gap-1"><CalendarClock className="w-3.5 h-3.5" />本月应完成</p>
+            <p className="text-2xl font-bold text-indigo-700">{nodeDashboard?.monthDueCount ?? 0}</p>
+            <p className="text-[10px] text-indigo-400">计划 {nodeDashboard?.monthPlannedCount ?? 0} · 已完成 {nodeDashboard?.monthCompletedCount ?? 0}</p>
+          </div>
+          <div className="p-3 bg-red-50 rounded-lg">
+            <p className="text-xs text-red-600 flex items-center gap-1"><AlertTriangle className="w-3.5 h-3.5" />逾期节点数</p>
+            <p className="text-2xl font-bold text-red-700">{nodeDashboard?.overdueCount ?? 0}</p>
+            <p className="text-[10px] text-red-400">需要尽快处理</p>
+          </div>
+          <div className="p-3 bg-green-50 rounded-lg">
+            <p className="text-xs text-green-600 flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" />本月已完成</p>
+            <p className="text-2xl font-bold text-green-700">{nodeDashboard?.monthCompletedCount ?? 0}</p>
+            <p className="text-[10px] text-green-400">完成率 {nodeDashboard?.monthPlannedCount ? Math.round((nodeDashboard.monthCompletedCount / nodeDashboard.monthPlannedCount) * 100) : 0}%</p>
+          </div>
+          <div className="p-3 bg-amber-50 rounded-lg">
+            <p className="text-xs text-amber-600 flex items-center gap-1"><Clock className="w-3.5 h-3.5" />待履约金额</p>
+            <p className="text-xl font-bold text-amber-700">¥ {Number(nodeDashboard?.totalPendingAmount ?? 0).toLocaleString()}</p>
+            <p className="text-[10px] text-amber-400">涉及 {nodeDashboard?.pendingAmountByContract?.length ?? 0} 个合同</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div>
+            <h4 className="text-sm font-medium text-gray-700 mb-2 flex items-center gap-1.5">
+              <Users className="w-4 h-4 text-gray-400" /> 按责任方统计完成率
+            </h4>
+            {(nodeDashboard?.byResponsibleParty || []).length === 0 ? (
+              <p className="text-xs text-gray-400 text-center py-6">暂无责任方数据</p>
+            ) : (
+              <div className="space-y-3">
+                {nodeDashboard?.byResponsibleParty.map((r) => {
+                  const rate = r.total > 0 ? Math.round((r.completed / r.total) * 100) : 0;
+                  return (
+                    <div key={r.responsible_party}>
+                      <div className="flex justify-between text-xs mb-1">
+                        <span className="font-medium text-gray-700">{r.responsible_party}</span>
+                        <span className="text-gray-500">{r.completed}/{r.total} · {rate}% · 逾期 {r.overdue}</span>
+                      </div>
+                      <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
+                        <div className="h-full bg-gradient-to-r from-indigo-400 to-indigo-600 rounded-full transition-all" style={{ width: `${rate}%` }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <h4 className="text-sm font-medium text-gray-700 mb-2 flex items-center gap-1.5">
+              <BarChart3 className="w-4 h-4 text-gray-400" /> 合同金额待履约分布
+            </h4>
+            {(nodeDashboard?.pendingAmountByContract || []).length === 0 ? (
+              <p className="text-xs text-gray-400 text-center py-6">暂无待履约合同</p>
+            ) : (
+              <div className="space-y-2 max-h-64 overflow-auto pr-1">
+                {nodeDashboard?.pendingAmountByContract.map((c) => {
+                  const maxAmt = Math.max(...(nodeDashboard?.pendingAmountByContract || []).map((x) => x.pending_amount), 1);
+                  const pct = Math.round((c.pending_amount / maxAmt) * 100);
+                  return (
+                    <Link to={`/contract/${c.id}`} key={c.id} className="block p-2 hover:bg-gray-50 rounded-lg">
+                      <div className="flex justify-between text-xs mb-1">
+                        <span className="font-medium text-gray-700 truncate max-w-[60%]">{c.title}</span>
+                        <span className="text-indigo-600 font-medium">¥ {Number(c.pending_amount).toLocaleString()}</span>
+                      </div>
+                      <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                        <div className="h-full bg-gradient-to-r from-amber-300 to-amber-500 rounded-full" style={{ width: `${pct}%` }} />
+                      </div>
+                      <p className="text-[10px] text-gray-400 mt-0.5">待履约节点 {c.node_total} 个</p>
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {(nodeDashboard?.overdueList || []).length > 0 && (
+          <div className="mt-5 pt-4 border-t border-gray-100">
+            <h4 className="text-sm font-medium text-red-600 mb-2 flex items-center gap-1.5">
+              <AlertTriangle className="w-4 h-4" /> 逾期节点列表
+            </h4>
+            <div className="space-y-2 max-h-48 overflow-auto pr-1">
+              {nodeDashboard?.overdueList.map((n) => (
+                <Link to={`/contract/${n.contract_id}`} key={n.id} className="block p-2 bg-red-50 border border-red-100 rounded-lg hover:bg-red-100">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-medium text-gray-800 truncate">{n.node_name}</span>
+                    <span className="text-red-600">逾期</span>
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] text-gray-500 mt-0.5">
+                    <span>{n.contract_title}</span>
+                    <span>计划：{n.planned_date}</span>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

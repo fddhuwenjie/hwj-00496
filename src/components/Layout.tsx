@@ -4,7 +4,7 @@ import { useStore, STATUS_LABEL, STATUS_COLOR } from '../store';
 import { api, type Notification } from '../lib/api';
 import {
   LayoutDashboard, FileText, FilePlus, FileSignature, Search, BarChart3,
-  Bell, LogOut, User, Menu, X, ChevronRight, Shield, Scale
+  Bell, LogOut, User, Menu, X, ChevronRight, Shield, Scale, CalendarClock
 } from 'lucide-react';
 
 const navItems = [
@@ -15,6 +15,7 @@ const navItems = [
   { path: '/pending', label: '待我签署', icon: FileSignature },
   { path: '/signature', label: '我的签章', icon: FileSignature },
   { path: '/search', label: '合同检索', icon: Search },
+  { path: '/reminders', label: '到期提醒', icon: CalendarClock },
   { path: '/review-rules', label: '审查规则', icon: Scale, adminOnly: true },
   { path: '/risk-dashboard', label: '风险看板', icon: Shield },
   { path: '/stats', label: '统计报表', icon: BarChart3 },

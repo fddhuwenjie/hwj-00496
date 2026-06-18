@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { api, type Contract, type User, type ReviewHistory, type RiskRecord, type RiskComparison, type RiskAuditLog } from '../lib/api';
+import { api, type Contract, type User, type ReviewHistory, type RiskRecord, type RiskComparison, type RiskAuditLog, type PerformanceNode, type NodeSuggestion, type NodeType, type NodeStatus } from '../lib/api';
 import { STATUS_LABEL, STATUS_COLOR, useStore } from '../store';
-import { ArrowLeft, Send, Edit2, FileX, History, Users, FileText, CheckCircle, XCircle, Clock, Shield, AlertTriangle, AlertCircle, Info, RefreshCw, Plus, Minus, X } from 'lucide-react';
+import { ArrowLeft, Send, Edit2, FileX, History, Users, FileText, CheckCircle, XCircle, Clock, Shield, AlertTriangle, AlertCircle, Info, RefreshCw, Plus, Minus, X, Trash2, Wand2, Link2, ListTodo, CalendarClock } from 'lucide-react';
 
 const RISK_LEVEL_BG: Record<string, string> = {
   high: 'bg-red-100 text-red-700 border-red-200',
@@ -28,7 +28,44 @@ const STATUS_COLORS: Record<string, string> = {
   exempt: 'bg-purple-100 text-purple-700',
 };
 
-type TabType = 'content' | 'risk' | 'review-history';
+export const NODE_TYPE_LABEL: Record<NodeType, string> = {
+  payment: '付款节点',
+  delivery: '交付节点',
+  acceptance: '验收节点',
+  other: '其他节点',
+};
+
+export const NODE_TYPE_COLOR: Record<NodeType, string> = {
+  payment: 'bg-amber-100 text-amber-700',
+  delivery: 'bg-blue-100 text-blue-700',
+  acceptance: 'bg-purple-100 text-purple-700',
+  other: 'bg-gray-100 text-gray-600',
+};
+
+export const NODE_TYPE_ICON: Record<NodeType, string> = {
+  payment: '💰',
+  delivery: '📦',
+  acceptance: '✅',
+  other: '📌',
+};
+
+export const NODE_STATUS_LABEL: Record<NodeStatus, string> = {
+  not_started: '未开始',
+  in_progress: '进行中',
+  completed: '已完成',
+  overdue: '已逾期',
+  cancelled: '已取消',
+};
+
+export const NODE_STATUS_COLOR: Record<NodeStatus, string> = {
+  not_started: 'bg-gray-100 text-gray-600',
+  in_progress: 'bg-blue-100 text-blue-700',
+  completed: 'bg-green-100 text-green-700',
+  overdue: 'bg-red-100 text-red-700',
+  cancelled: 'bg-gray-200 text-gray-500 line-through',
+};
+
+type TabType = 'content' | 'risk' | 'review-history' | 'nodes';
 
 export default function ContractDetail() {
   const { id } = useParams();
@@ -52,6 +89,11 @@ export default function ContractDetail() {
   const [exemptModal, setExemptModal] = useState<{ risk: RiskRecord; reason: string } | null>(null);
   const [auditLogModal, setAuditLogModal] = useState<{ riskId: number; logs: RiskAuditLog[] } | null>(null);
 
+  const [nodes, setNodes] = useState<PerformanceNode[]>([]);
+  const [nodeModal, setNodeModal] = useState<{ mode: 'create' | 'edit'; node: Partial<PerformanceNode> } | null>(null);
+  const [extractModal, setExtractModal] = useState<{ suggestions: NodeSuggestion[]; selected: boolean[]; loading: boolean } | null>(null);
+  const [completeModal, setCompleteModal] = useState<{ nodeId: number; attachment_url: string } | null>(null);
+
   const load = async () => {
     const c = await api.getContract(Number(id));
     setContract(c);
@@ -66,6 +108,13 @@ export default function ContractDetail() {
       setVoidConfirmations([]);
       setVoidInfo(null);
     }
+  };
+
+  const loadNodes = async () => {
+    try {
+      const list = await api.getNodes(Number(id));
+      setNodes(list);
+    } catch {}
   };
 
   const loadReviewData = async () => {
@@ -83,6 +132,7 @@ export default function ContractDetail() {
     load();
     api.getUsers().then(setUsers).catch(() => {});
     loadReviewData();
+    loadNodes();
   }, [id]);
 
   if (!contract) {
@@ -96,6 +146,13 @@ export default function ContractDetail() {
   const needConfirmVoid = contract.void_initiated_by && !contract.is_voided && myVoidConf && !myVoidConf.confirmed;
   const isSigned = contract.status === 'signed';
   const isReadOnly = isSigned || contract.is_voided || !!contract.void_initiated_by;
+  const canManageNodes = !contract.is_voided && (user?.role === 'admin' || contract.created_by === user?.id || (contract.signers || []).some((s) => s.user_id === user?.id));
+  const nodeOverdueCount = nodes.filter((n) => n.effective_status === 'overdue').length;
+  const nodeDueSoonCount = nodes.filter((n) => {
+    if (n.effective_status === 'completed' || n.effective_status === 'cancelled') return false;
+    const days = Math.ceil((new Date(n.planned_date).getTime() - Date.now()) / 86400000);
+    return days >= 0 && days <= 7;
+  }).length;
 
   const handleReview = async () => {
     if (!confirm('确认执行智能审查？系统将扫描合同内容并检测风险条款。')) return;
@@ -217,6 +274,142 @@ export default function ContractDetail() {
     try {
       const logs = await api.getRiskAuditLogs(riskId);
       setAuditLogModal({ riskId, logs });
+    } catch (e: any) {
+      alert(e.message);
+    }
+  };
+
+  const openCreateNode = () => {
+    setNodeModal({
+      mode: 'create',
+      node: {
+        node_name: '',
+        node_type: 'payment',
+        responsible_party: contract.party_a || '',
+        planned_date: contract.effective_date || new Date().toISOString().split('T')[0],
+        amount: 0,
+        deliverable: '',
+        remark: '',
+        attachment_url: '',
+      },
+    });
+  };
+
+  const openEditNode = (node: PerformanceNode) => {
+    setNodeModal({
+      mode: 'edit',
+      node: { ...node },
+    });
+  };
+
+  const handleSaveNode = async () => {
+    if (!nodeModal) return;
+    const n = nodeModal.node;
+    if (!n.node_name || !n.node_name.trim()) {
+      alert('请填写节点名称');
+      return;
+    }
+    if (!n.planned_date) {
+      alert('请选择计划完成日期');
+      return;
+    }
+    try {
+      if (nodeModal.mode === 'create') {
+        await api.createNode(contract.id, {
+          node_name: n.node_name,
+          node_type: (n.node_type as NodeType) || 'other',
+          responsible_party: n.responsible_party || '',
+          planned_date: n.planned_date,
+          amount: Number(n.amount) || 0,
+          deliverable: n.deliverable || '',
+          remark: n.remark || '',
+          attachment_url: n.attachment_url || '',
+        });
+      } else {
+        await api.updateNode(n.id!, {
+          node_name: n.node_name,
+          node_type: (n.node_type as NodeType) || 'other',
+          responsible_party: n.responsible_party || '',
+          planned_date: n.planned_date,
+          amount: Number(n.amount) || 0,
+          deliverable: n.deliverable || '',
+          remark: n.remark || '',
+          attachment_url: n.attachment_url || '',
+        });
+      }
+      setNodeModal(null);
+      await loadNodes();
+    } catch (e: any) {
+      alert(e.message);
+    }
+  };
+
+  const handleDeleteNode = async (node: PerformanceNode) => {
+    if (!confirm(`确认删除节点「${node.node_name}」？`)) return;
+    try {
+      await api.deleteNode(node.id);
+      await loadNodes();
+    } catch (e: any) {
+      alert(e.message);
+    }
+  };
+
+  const handleNodeStatusChange = (node: PerformanceNode, status: NodeStatus) => {
+    if (status === 'completed') {
+      setCompleteModal({ nodeId: node.id, attachment_url: node.attachment_url || '' });
+      return;
+    }
+    const msgMap: Record<NodeStatus, string> = {
+      not_started: '未开始',
+      in_progress: '进行中',
+      completed: '已完成',
+      overdue: '已逾期',
+      cancelled: '已取消',
+    };
+    if (!confirm(`确认将节点「${node.node_name}」状态变更为「${msgMap[status]}」？`)) return;
+    api.updateNodeStatus(node.id, status)
+      .then(() => loadNodes())
+      .catch((e) => alert(e.message));
+  };
+
+  const handleCompleteSubmit = async () => {
+    if (!completeModal) return;
+    try {
+      await api.updateNodeStatus(completeModal.nodeId, 'completed', completeModal.attachment_url);
+      setCompleteModal(null);
+      await loadNodes();
+    } catch (e: any) {
+      alert(e.message);
+    }
+  };
+
+  const handleExtract = async () => {
+    setExtractModal({ suggestions: [], selected: [], loading: true });
+    try {
+      const result = await api.extractNodes(contract.id);
+      setExtractModal({
+        suggestions: result.suggestions,
+        selected: result.suggestions.map(() => true),
+        loading: false,
+      });
+    } catch (e: any) {
+      setExtractModal(null);
+      alert(e.message);
+    }
+  };
+
+  const handleExtractSave = async () => {
+    if (!extractModal) return;
+    const picked = extractModal.suggestions.filter((_, i) => extractModal.selected[i]);
+    if (picked.length === 0) {
+      alert('请至少选择一个节点');
+      return;
+    }
+    try {
+      const r = await api.bulkCreateNodes(contract.id, picked);
+      setExtractModal(null);
+      alert(`已从合同正文提取并创建 ${r.count} 个履约节点`);
+      await loadNodes();
     } catch (e: any) {
       alert(e.message);
     }
@@ -501,6 +694,33 @@ export default function ContractDetail() {
             审查历史
           </div>
         </button>
+        <button
+          onClick={() => setActiveTab('nodes')}
+          className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition ${
+            activeTab === 'nodes'
+              ? 'bg-indigo-600 text-white'
+              : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          <div className="flex items-center justify-center gap-2">
+            <ListTodo className="w-4 h-4" />
+            履约节点
+            {nodes.length > 0 && (
+              <span className={`px-1.5 py-0.5 rounded-full text-xs ${
+                activeTab === 'nodes' ? 'bg-white/20' : 'bg-indigo-100 text-indigo-600'
+              }`}>
+                {nodes.length}
+              </span>
+            )}
+            {nodeOverdueCount > 0 && (
+              <span className={`px-1.5 py-0.5 rounded-full text-xs ${
+                activeTab === 'nodes' ? 'bg-white/20' : 'bg-red-100 text-red-600'
+              }`}>
+                逾期{nodeOverdueCount}
+              </span>
+            )}
+          </div>
+        </button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
@@ -661,6 +881,181 @@ export default function ContractDetail() {
                         </div>
                       </div>
                     ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'nodes' && (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
+              <div className="p-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
+                <h3 className="font-semibold flex items-center gap-2">
+                  <ListTodo className="w-4 h-4 text-indigo-500" />
+                  履约节点
+                  <span className="text-xs text-gray-400 font-normal">共 {nodes.length} 个</span>
+                </h3>
+                {canManageNodes && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleExtract}
+                      className="text-xs px-3 py-1.5 bg-purple-100 text-purple-700 rounded hover:bg-purple-200 flex items-center gap-1"
+                    >
+                      <Wand2 className="w-3.5 h-3.5" />
+                      从正文提取
+                    </button>
+                    <button
+                      onClick={openCreateNode}
+                      className="text-xs px-3 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 flex items-center gap-1"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      新增节点
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {nodes.length > 0 && (
+                <div className="px-4 pt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="p-3 bg-gray-50 rounded-lg">
+                    <p className="text-xs text-gray-500">节点总数</p>
+                    <p className="text-lg font-bold text-gray-800">{nodes.length}</p>
+                  </div>
+                  <div className="p-3 bg-green-50 rounded-lg">
+                    <p className="text-xs text-green-600">已完成</p>
+                    <p className="text-lg font-bold text-green-700">{nodes.filter((n) => n.effective_status === 'completed').length}</p>
+                  </div>
+                  <div className="p-3 bg-red-50 rounded-lg">
+                    <p className="text-xs text-red-600">已逾期</p>
+                    <p className="text-lg font-bold text-red-700">{nodeOverdueCount}</p>
+                  </div>
+                  <div className="p-3 bg-amber-50 rounded-lg">
+                    <p className="text-xs text-amber-600">7天内到期</p>
+                    <p className="text-lg font-bold text-amber-700">{nodeDueSoonCount}</p>
+                  </div>
+                </div>
+              )}
+
+              <div className="p-4">
+                {nodes.length === 0 ? (
+                  <div className="text-center py-16">
+                    <ListTodo className="w-16 h-16 mx-auto text-gray-300 mb-4" />
+                    <p className="text-gray-500 mb-2">暂无履约节点</p>
+                    <p className="text-xs text-gray-400 mb-4">可手动新增，或从合同正文/模板中提取付款、交付、验收节点</p>
+                    {canManageNodes && (
+                      <div className="flex items-center justify-center gap-2">
+                        <button onClick={handleExtract} className="px-4 py-2 bg-purple-100 text-purple-700 rounded-lg text-sm hover:bg-purple-200 flex items-center gap-1">
+                          <Wand2 className="w-4 h-4" /> 从正文提取
+                        </button>
+                        <button onClick={openCreateNode} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 flex items-center gap-1">
+                          <Plus className="w-4 h-4" /> 新增节点
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {nodes.map((node) => {
+                      const days = Math.ceil((new Date(node.planned_date).getTime() - Date.now()) / 86400000);
+                      const status = node.effective_status;
+                      return (
+                        <div key={node.id} className="p-4 border border-gray-200 rounded-lg hover:border-gray-300 transition">
+                          <div className="flex items-start justify-between gap-3 flex-wrap">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap mb-2">
+                                <span className="text-lg">{NODE_TYPE_ICON[node.node_type]}</span>
+                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${NODE_TYPE_COLOR[node.node_type]}`}>
+                                  {NODE_TYPE_LABEL[node.node_type]}
+                                </span>
+                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${NODE_STATUS_COLOR[status]}`}>
+                                  {NODE_STATUS_LABEL[status]}
+                                </span>
+                                <span className="text-sm font-medium text-gray-900">{node.node_name}</span>
+                                {Number(node.amount) > 0 && (
+                                  <span className="text-xs text-indigo-600 font-medium">¥ {Number(node.amount).toLocaleString()}</span>
+                                )}
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                                <div className="flex items-center gap-1.5 text-gray-600">
+                                  <CalendarClock className="w-3.5 h-3.5 text-gray-400" />
+                                  计划完成：{node.planned_date}
+                                  {status !== 'completed' && status !== 'cancelled' && (
+                                    <span className={`ml-1 ${days < 0 ? 'text-red-600' : days <= 7 ? 'text-amber-600' : 'text-gray-400'}`}>
+                                      {days < 0 ? `（已逾期 ${Math.abs(days)} 天）` : `（剩 ${days} 天）`}
+                                    </span>
+                                  )}
+                                </div>
+                                {node.responsible_party && (
+                                  <div className="text-gray-600">责任方：{node.responsible_party}</div>
+                                )}
+                              </div>
+                              {node.deliverable && (
+                                <p className="text-xs text-gray-600 mt-1.5 bg-gray-50 p-2 rounded">
+                                  <span className="text-gray-400">交付物：</span>{node.deliverable}
+                                </p>
+                              )}
+                              {node.remark && (
+                                <p className="text-xs text-gray-500 mt-1">备注：{node.remark}</p>
+                              )}
+                              {status === 'completed' && (
+                                <div className="mt-2 flex items-center gap-3 text-xs text-green-700 bg-green-50 p-2 rounded flex-wrap">
+                                  <span className="flex items-center gap-1">
+                                    <CheckCircle className="w-3.5 h-3.5" />
+                                    完成时间：{node.completed_at?.split('.')[0].replace('T', ' ') || '-'}
+                                  </span>
+                                  {node.completer_name && <span>操作人：{node.completer_name}</span>}
+                                  {node.attachment_url && (
+                                    <a href={node.attachment_url} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-indigo-600 hover:underline">
+                                      <Link2 className="w-3.5 h-3.5" /> 附件
+                                    </a>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+
+                            {canManageNodes && (
+                              <div className="flex flex-col gap-1.5 flex-shrink-0 min-w-[120px]">
+                                {status === 'not_started' && (
+                                  <>
+                                    <button onClick={() => handleNodeStatusChange(node, 'in_progress')} className="px-3 py-1.5 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200">开始进行</button>
+                                    <button onClick={() => handleNodeStatusChange(node, 'completed')} className="px-3 py-1.5 text-xs bg-green-100 text-green-700 rounded hover:bg-green-200">标记完成</button>
+                                    <button onClick={() => handleNodeStatusChange(node, 'cancelled')} className="px-3 py-1.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200">取消</button>
+                                  </>
+                                )}
+                                {status === 'in_progress' && (
+                                  <>
+                                    <button onClick={() => handleNodeStatusChange(node, 'completed')} className="px-3 py-1.5 text-xs bg-green-100 text-green-700 rounded hover:bg-green-200">标记完成</button>
+                                    <button onClick={() => handleNodeStatusChange(node, 'cancelled')} className="px-3 py-1.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200">取消</button>
+                                    <button onClick={() => handleNodeStatusChange(node, 'not_started')} className="px-3 py-1.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200">重置未开始</button>
+                                  </>
+                                )}
+                                {status === 'overdue' && (
+                                  <>
+                                    <button onClick={() => handleNodeStatusChange(node, 'in_progress')} className="px-3 py-1.5 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200">恢复进行</button>
+                                    <button onClick={() => handleNodeStatusChange(node, 'completed')} className="px-3 py-1.5 text-xs bg-green-100 text-green-700 rounded hover:bg-green-200">标记完成</button>
+                                    <button onClick={() => handleNodeStatusChange(node, 'cancelled')} className="px-3 py-1.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200">取消</button>
+                                  </>
+                                )}
+                                {status === 'completed' && (
+                                  <button onClick={() => handleNodeStatusChange(node, 'in_progress')} className="px-3 py-1.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200">撤销完成</button>
+                                )}
+                                {status === 'cancelled' && (
+                                  <button onClick={() => handleNodeStatusChange(node, 'not_started')} className="px-3 py-1.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200">恢复未开始</button>
+                                )}
+                                <div className="flex gap-1.5 pt-1 border-t border-gray-100 mt-1">
+                                  <button onClick={() => openEditNode(node)} className="flex-1 px-2 py-1.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200 flex items-center justify-center gap-1">
+                                    <Edit2 className="w-3 h-3" /> 编辑
+                                  </button>
+                                  <button onClick={() => handleDeleteNode(node)} className="flex-1 px-2 py-1.5 text-xs bg-red-50 text-red-600 rounded hover:bg-red-100 flex items-center justify-center gap-1">
+                                    <Trash2 className="w-3 h-3" /> 删除
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -981,6 +1376,243 @@ export default function ContractDetail() {
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {nodeModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-lg max-h-[85vh] overflow-auto">
+            <div className="p-5 border-b border-gray-100 flex items-center justify-between sticky top-0 bg-white">
+              <h3 className="text-lg font-semibold flex items-center gap-2">
+                <ListTodo className="w-5 h-5 text-indigo-500" />
+                {nodeModal.mode === 'create' ? '新增履约节点' : '编辑履约节点'}
+              </h3>
+              <button onClick={() => setNodeModal(null)} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">×</button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">节点名称 *</label>
+                <input
+                  value={nodeModal.node.node_name || ''}
+                  onChange={(e) => setNodeModal({ ...nodeModal, node: { ...nodeModal.node, node_name: e.target.value } })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                  placeholder="如：首期付款、设备交付、到货验收"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">节点类型</label>
+                  <select
+                    value={nodeModal.node.node_type || 'other'}
+                    onChange={(e) => setNodeModal({ ...nodeModal, node: { ...nodeModal.node, node_type: e.target.value as NodeType } })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                  >
+                    <option value="payment">付款节点</option>
+                    <option value="delivery">交付节点</option>
+                    <option value="acceptance">验收节点</option>
+                    <option value="other">其他节点</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">计划完成日期 *</label>
+                  <input
+                    type="date"
+                    value={nodeModal.node.planned_date || ''}
+                    onChange={(e) => setNodeModal({ ...nodeModal, node: { ...nodeModal.node, planned_date: e.target.value } })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">责任方</label>
+                  <input
+                    value={nodeModal.node.responsible_party || ''}
+                    onChange={(e) => setNodeModal({ ...nodeModal, node: { ...nodeModal.node, responsible_party: e.target.value } })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                    placeholder="如：甲方 / 乙方 / 部门"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">金额（元）</label>
+                  <input
+                    type="number"
+                    value={nodeModal.node.amount ?? 0}
+                    onChange={(e) => setNodeModal({ ...nodeModal, node: { ...nodeModal.node, amount: Number(e.target.value) } })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">交付物说明</label>
+                <textarea
+                  value={nodeModal.node.deliverable || ''}
+                  onChange={(e) => setNodeModal({ ...nodeModal, node: { ...nodeModal.node, deliverable: e.target.value } })}
+                  rows={2}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                  placeholder="该节点需交付的内容说明"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">附件链接</label>
+                <input
+                  value={nodeModal.node.attachment_url || ''}
+                  onChange={(e) => setNodeModal({ ...nodeModal, node: { ...nodeModal.node, attachment_url: e.target.value } })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                  placeholder="完成凭证附件链接（可选）"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">备注</label>
+                <textarea
+                  value={nodeModal.node.remark || ''}
+                  onChange={(e) => setNodeModal({ ...nodeModal, node: { ...nodeModal.node, remark: e.target.value } })}
+                  rows={2}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                  placeholder="备注信息（可选）"
+                />
+              </div>
+            </div>
+            <div className="p-5 border-t border-gray-100 flex justify-end gap-3 sticky bottom-0 bg-white">
+              <button onClick={() => setNodeModal(null)} className="px-4 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-50">取消</button>
+              <button onClick={handleSaveNode} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {extractModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-auto">
+            <div className="p-5 border-b border-gray-100 flex items-center justify-between sticky top-0 bg-white">
+              <h3 className="text-lg font-semibold flex items-center gap-2">
+                <Wand2 className="w-5 h-5 text-purple-500" />
+                从合同正文提取履约节点
+              </h3>
+              <button onClick={() => setExtractModal(null)} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">×</button>
+            </div>
+            <div className="p-5">
+              {extractModal.loading ? (
+                <div className="text-center py-12 text-gray-400">
+                  <RefreshCw className="w-8 h-8 mx-auto animate-spin mb-2" />
+                  正在解析合同正文...
+                </div>
+              ) : extractModal.suggestions.length === 0 ? (
+                <div className="text-center py-12 text-gray-400">
+                  <p>未从合同正文中识别到付款、交付、验收相关节点。</p>
+                  <p className="text-xs mt-2">可关闭后手动新增节点。</p>
+                </div>
+              ) : (
+                <>
+                  <p className="text-sm text-gray-500 mb-3">系统已从合同正文识别出以下节点，勾选后批量创建（可编辑名称/日期/金额后再保存）：</p>
+                  <div className="space-y-3">
+                    {extractModal.suggestions.map((s, i) => (
+                      <div key={i} className="p-3 border border-gray-200 rounded-lg">
+                        <div className="flex items-start gap-3">
+                          <input
+                            type="checkbox"
+                            checked={extractModal.selected[i]}
+                            onChange={(e) => {
+                              const next = [...extractModal.selected];
+                              next[i] = e.target.checked;
+                              setExtractModal({ ...extractModal, selected: next });
+                            }}
+                            className="w-4 h-4 mt-1 rounded text-indigo-600"
+                          />
+                          <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-2">
+                            <input
+                              value={s.node_name}
+                              onChange={(e) => {
+                                const next = [...extractModal.suggestions];
+                                next[i] = { ...next[i], node_name: e.target.value };
+                                setExtractModal({ ...extractModal, suggestions: next });
+                              }}
+                              className="px-2 py-1.5 border border-gray-300 rounded text-sm md:col-span-2"
+                            />
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium justify-self-start ${NODE_TYPE_COLOR[s.node_type]}`}>
+                              {NODE_TYPE_LABEL[s.node_type]}
+                            </span>
+                            <input
+                              type="date"
+                              value={s.planned_date}
+                              onChange={(e) => {
+                                const next = [...extractModal.suggestions];
+                                next[i] = { ...next[i], planned_date: e.target.value };
+                                setExtractModal({ ...extractModal, suggestions: next });
+                              }}
+                              className="px-2 py-1.5 border border-gray-300 rounded text-sm"
+                            />
+                            <input
+                              type="number"
+                              value={s.amount}
+                              onChange={(e) => {
+                                const next = [...extractModal.suggestions];
+                                next[i] = { ...next[i], amount: Number(e.target.value) };
+                                setExtractModal({ ...extractModal, suggestions: next });
+                              }}
+                              className="px-2 py-1.5 border border-gray-300 rounded text-sm"
+                              placeholder="金额"
+                            />
+                            <input
+                              value={s.responsible_party}
+                              onChange={(e) => {
+                                const next = [...extractModal.suggestions];
+                                next[i] = { ...next[i], responsible_party: e.target.value };
+                                setExtractModal({ ...extractModal, suggestions: next });
+                              }}
+                              className="px-2 py-1.5 border border-gray-300 rounded text-sm md:col-span-2"
+                              placeholder="责任方"
+                            />
+                            <p className="text-xs text-gray-400 md:col-span-2 bg-gray-50 p-1.5 rounded">来源：{s._source}</p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+            {!extractModal.loading && extractModal.suggestions.length > 0 && (
+              <div className="p-5 border-t border-gray-100 flex justify-end gap-3 sticky bottom-0 bg-white">
+                <button onClick={() => setExtractModal(null)} className="px-4 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-50">取消</button>
+                <button onClick={handleExtractSave} className="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm hover:bg-purple-700">
+                  创建选中节点（{extractModal.selected.filter(Boolean).length}）
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {completeModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-md">
+            <div className="p-5 border-b border-gray-100 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-green-700 flex items-center gap-2">
+                <CheckCircle className="w-5 h-5" />
+                标记节点完成
+              </h3>
+              <button onClick={() => setCompleteModal(null)} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">×</button>
+            </div>
+            <div className="p-5 space-y-4">
+              <p className="text-sm text-gray-600">完成时将记录完成时间与操作人，可填写交付附件链接作为完成凭证。</p>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-1">
+                  <Link2 className="w-4 h-4" /> 附件链接（可选）
+                </label>
+                <input
+                  value={completeModal.attachment_url}
+                  onChange={(e) => setCompleteModal({ ...completeModal, attachment_url: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                  placeholder="完成凭证附件链接"
+                />
+              </div>
+            </div>
+            <div className="p-5 border-t border-gray-100 flex justify-end gap-3">
+              <button onClick={() => setCompleteModal(null)} className="px-4 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-50">取消</button>
+              <button onClick={handleCompleteSubmit} className="px-4 py-2 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700">确认完成</button>
             </div>
           </div>
         </div>

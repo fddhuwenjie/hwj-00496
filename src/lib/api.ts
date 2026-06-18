@@ -241,6 +241,92 @@ export interface RiskAuditLog {
   created_at: string;
 }
 
+export type NodeType = 'payment' | 'delivery' | 'acceptance' | 'other';
+export type NodeStatus = 'not_started' | 'in_progress' | 'completed' | 'overdue' | 'cancelled';
+
+export interface PerformanceNode {
+  id: number;
+  contract_id: number;
+  node_name: string;
+  node_type: NodeType;
+  responsible_party: string | null;
+  planned_date: string;
+  amount: number;
+  deliverable: string | null;
+  status: NodeStatus;
+  effective_status: NodeStatus;
+  completed_at: string | null;
+  completed_by: number | null;
+  completer_name?: string | null;
+  attachment_url: string | null;
+  remark: string | null;
+  sort_order: number;
+  created_by: number;
+  creator_name?: string | null;
+  created_at: string;
+  updated_at: string;
+  contract_title?: string;
+  contract_no?: string;
+  party_a?: string;
+  party_b?: string;
+  contract_amount?: number;
+  expiry_date?: string;
+}
+
+export interface NodeSuggestion {
+  node_name: string;
+  node_type: NodeType;
+  responsible_party: string;
+  planned_date: string;
+  amount: number;
+  deliverable: string;
+  remark: string;
+  _source?: string;
+}
+
+export interface NodeReminders {
+  today: string;
+  within7Date: string;
+  dueIn7Days: PerformanceNode[];
+  overdue: PerformanceNode[];
+  expiringContracts: (Contract & { template_name?: string; template_category?: string })[];
+}
+
+export interface ResponsiblePartyStat {
+  responsible_party: string;
+  total: number;
+  completed: number;
+  overdue: number;
+}
+
+export interface PendingAmountByContract {
+  id: number;
+  title: string;
+  contract_no: string;
+  contract_amount: number;
+  party_a: string;
+  party_b: string;
+  contract_status: string;
+  pending_amount: number;
+  completed_amount: number;
+  node_total: number;
+  node_completed: number;
+}
+
+export interface NodeDashboard {
+  month: { year: number; month: number };
+  monthDueNodes: PerformanceNode[];
+  monthDueCount: number;
+  monthPlannedCount: number;
+  monthCompletedCount: number;
+  overdueCount: number;
+  overdueList: PerformanceNode[];
+  byResponsibleParty: ResponsiblePartyStat[];
+  pendingAmountByContract: PendingAmountByContract[];
+  totalPendingAmount: number;
+  filters: { node_type: string | null; responsible_party: string | null; startDate: string | null; endDate: string | null };
+}
+
 export const api = {
   login: (username: string, password: string) =>
     request<User>('/auth/login', {
@@ -335,4 +421,26 @@ export const api = {
   },
   getPendingOvertime: () => request<any[]>('/stats/pending-overtime'),
   getCategoryDistribution: () => request<any[]>('/stats/category-distribution'),
+
+  getNodes: (contractId: number) => request<PerformanceNode[]>(`/nodes/contract/${contractId}`),
+  createNode: (contractId: number, data: Partial<PerformanceNode>) =>
+    request<{ id: number }>(`/nodes/contract/${contractId}`, { method: 'POST', body: JSON.stringify(data) }),
+  bulkCreateNodes: (contractId: number, nodes: Partial<NodeSuggestion>[]) =>
+    request<{ ids: number[]; count: number }>(`/nodes/contract/${contractId}/bulk`, { method: 'POST', body: JSON.stringify({ nodes }) }),
+  updateNode: (id: number, data: Partial<PerformanceNode>) =>
+    request<void>(`/nodes/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteNode: (id: number) => request<void>(`/nodes/${id}`, { method: 'DELETE' }),
+  updateNodeStatus: (id: number, status: NodeStatus, attachment_url?: string) =>
+    request<void>(`/nodes/${id}/status`, { method: 'POST', body: JSON.stringify({ status, attachment_url }) }),
+  extractNodes: (contractId: number, content?: string) =>
+    request<{ suggestions: NodeSuggestion[]; content_length: number }>(`/nodes/contract/${contractId}/extract`, {
+      method: 'POST',
+      body: JSON.stringify(content ? { content } : {}),
+    }),
+  syncOverdueNodes: () => request<{ updated: number }>(`/nodes/sync-overdue`, { method: 'POST' }),
+  getNodeReminders: () => request<NodeReminders>('/nodes/reminders'),
+  getNodeDashboard: (params?: { node_type?: string; responsible_party?: string; startDate?: string; endDate?: string }) => {
+    const qs = params ? '?' + new URLSearchParams(params as any).toString() : '';
+    return request<NodeDashboard>(`/nodes/dashboard${qs}`);
+  },
 };
