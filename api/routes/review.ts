@@ -651,10 +651,8 @@ router.get('/dashboard', (req: AuthRequest, res: Response) => {
       pendingSql += ' AND r.risk_level = ?';
       pendingParams.push(risk_level);
     }
-    pendingSql += ' ' + dateFilterSql.replace(/rh\./g, 'rh2.');
-    if (dateParams.length > 0) {
-      pendingSql += ' AND EXISTS (SELECT 1 FROM review_history rh2 WHERE rh2.id = r.review_history_id ' + dateFilterSql + ')';
-    }
+    pendingSql += ' ' + dateFilterSql;
+    pendingParams.push(...dateParams);
     pendingSql += ' ORDER BY r.risk_level = ? DESC, r.risk_level = ? DESC, r.risk_level = ? DESC, r.created_at DESC LIMIT 50';
     pendingParams.push('high', 'medium', 'low');
     const pendingList = db.prepare(pendingSql).all(...pendingParams);
